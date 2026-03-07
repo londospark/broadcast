@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Broadcast
+Comment=AI noise suppression with per-app routing
+Exec=broadcast-gui
+Icon=multimedia-volume-control
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Settings;
+Keywords=noise;suppression;filter;pipewire;deepfilter;broadcast;

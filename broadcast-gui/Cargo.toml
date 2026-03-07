@@ -1,0 +1,11 @@
+[package]
+name = "broadcast-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+broadcast-core = { path = "../broadcast-core" }
+gtk = { package = "gtk4", version = "0.9" }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

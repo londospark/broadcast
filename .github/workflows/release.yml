@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp target/release/broadcast-ctl release/broadcast-ctl
+          cp target/release/broadcast-gui release/broadcast-gui
+          chmod +x release/broadcast-ctl release/broadcast-gui
+          cd release && tar czf broadcast-x86_64-linux.tar.gz broadcast-ctl broadcast-gui
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/broadcast-ctl
+            release/broadcast-gui
+            release/broadcast-x86_64-linux.tar.gz
+          generate_release_notes: true

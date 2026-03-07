@@ -1,0 +1,10 @@
+[package]
+name = "broadcast-ctl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+broadcast-core = { path = "../broadcast-core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
