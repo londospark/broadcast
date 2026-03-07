@@ -1,0 +1,21 @@
+# Maintainer: londospark <londospark@users.noreply.github.com>
+pkgname=broadcast-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="AI-powered per-application noise suppression for PipeWire"
+arch=('x86_64')
+url="https://github.com/londospark/broadcast"
+license=('MIT')
+depends=('pipewire' 'pipewire-pulse' 'gtk4' 'libadwaita' 'deepfilternet')
+provides=('broadcast')
+conflicts=('broadcast' 'broadcast-git')
+source=("broadcast-ctl-${pkgver}::${url}/releases/download/v${pkgver}/broadcast-ctl"
+        "broadcast-gui-${pkgver}::${url}/releases/download/v${pkgver}/broadcast-gui"
+        "broadcast-gui.desktop::${url}/raw/refs/heads/main/broadcast-gui.desktop")
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+    install -Dm755 "broadcast-ctl-${pkgver}" "${pkgdir}/usr/bin/broadcast-ctl"
+    install -Dm755 "broadcast-gui-${pkgver}" "${pkgdir}/usr/bin/broadcast-gui"
+    install -Dm644 "broadcast-gui.desktop" "${pkgdir}/usr/share/applications/broadcast-gui.desktop"
+}
