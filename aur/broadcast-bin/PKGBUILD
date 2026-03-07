@@ -12,7 +12,9 @@ conflicts=('broadcast' 'broadcast-git')
 source=("broadcast-ctl-${pkgver}::${url}/releases/download/v${pkgver}/broadcast-ctl"
         "broadcast-gui-${pkgver}::${url}/releases/download/v${pkgver}/broadcast-gui"
         "broadcast-gui.desktop::${url}/raw/refs/heads/main/broadcast-gui.desktop")
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+sha256sums=('c148cd14e2d379b3a07adf855fa37f844b908e49efc562534403d282440fe162'
+            'ff3633f69bc94e09f04471ad0983c529bed0242a067b1b130e8145378462b904'
+            '7a6ffbf0826c1d618f86c3da987c828c8f7be47f96eab5d4f8aa29990b29ca97')
 
 package() {
     install -Dm755 "broadcast-ctl-${pkgver}" "${pkgdir}/usr/bin/broadcast-ctl"
