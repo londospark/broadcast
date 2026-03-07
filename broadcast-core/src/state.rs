@@ -107,11 +107,182 @@ impl BroadcastState {
     /// Get the route for a specific app, falling back to default.
     pub fn route_for(&self, app_binary: &str) -> AppRoute {
         let key = app_binary.to_lowercase();
-        self.app_routes.get(&key).copied().unwrap_or(self.default_route)
+        self.app_routes
+            .get(&key)
+            .copied()
+            .unwrap_or(self.default_route)
     }
 
     /// Set the route for a specific app.
     pub fn set_app_route(&mut self, app_binary: &str, route: AppRoute) {
         self.app_routes.insert(app_binary.to_lowercase(), route);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── AppRoute::FromStr ──────────────────────────────────────────────
+
+    #[test]
+    fn test_app_route_from_str_filtered() {
+        for s in &["filtered", "filter", "on"] {
+            assert_eq!(s.parse::<AppRoute>().unwrap(), AppRoute::Filtered);
+        }
+    }
+
+    #[test]
+    fn test_app_route_from_str_direct() {
+        for s in &["direct", "off"] {
+            assert_eq!(s.parse::<AppRoute>().unwrap(), AppRoute::Direct);
+        }
+    }
+
+    #[test]
+    fn test_app_route_from_str_case_insensitive() {
+        assert_eq!("FILTERED".parse::<AppRoute>().unwrap(), AppRoute::Filtered);
+        assert_eq!("Direct".parse::<AppRoute>().unwrap(), AppRoute::Direct);
+        assert_eq!("ON".parse::<AppRoute>().unwrap(), AppRoute::Filtered);
+        assert_eq!("OFF".parse::<AppRoute>().unwrap(), AppRoute::Direct);
+    }
+
+    #[test]
+    fn test_app_route_from_str_invalid() {
+        assert!("invalid".parse::<AppRoute>().is_err());
+        assert!("".parse::<AppRoute>().is_err());
+        assert!("yes".parse::<AppRoute>().is_err());
+    }
+
+    // ── AppRoute::Display ──────────────────────────────────────────────
+
+    #[test]
+    fn test_app_route_display() {
+        assert_eq!(AppRoute::Filtered.to_string(), "filtered");
+        assert_eq!(AppRoute::Direct.to_string(), "direct");
+    }
+
+    // ── Defaults ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_state() {
+        let s = BroadcastState::default();
+        assert!(s.master);
+        assert!(s.input_filter);
+        assert!(s.output_filter);
+        assert_eq!(s.default_route, AppRoute::Direct);
+        assert!(s.app_routes.is_empty());
+    }
+
+    #[test]
+    fn test_node_names_default() {
+        let n = NodeNames::default();
+        assert_eq!(n.input_capture, "capture.deepfilter_mic");
+        assert_eq!(n.output_sink, "broadcast_filter_sink");
+    }
+
+    // ── route_for / set_app_route ──────────────────────────────────────
+
+    #[test]
+    fn test_route_for_known_app() {
+        let mut s = BroadcastState::default();
+        s.set_app_route("brave", AppRoute::Filtered);
+        assert_eq!(s.route_for("brave"), AppRoute::Filtered);
+    }
+
+    #[test]
+    fn test_route_for_unknown_app() {
+        let s = BroadcastState::default(); // default_route = Direct
+        assert_eq!(s.route_for("unknown_app"), AppRoute::Direct);
+    }
+
+    #[test]
+    fn test_route_for_case_insensitive() {
+        let mut s = BroadcastState::default();
+        s.set_app_route("brave", AppRoute::Filtered);
+        // Lookup with different case should still match (key lowered on set and get)
+        assert_eq!(s.route_for("Brave"), AppRoute::Filtered);
+        assert_eq!(s.route_for("BRAVE"), AppRoute::Filtered);
+    }
+
+    #[test]
+    fn test_set_app_route() {
+        let mut s = BroadcastState::default();
+        s.set_app_route("spotify", AppRoute::Direct);
+        assert_eq!(s.route_for("spotify"), AppRoute::Direct);
+        // Overwrite
+        s.set_app_route("spotify", AppRoute::Filtered);
+        assert_eq!(s.route_for("spotify"), AppRoute::Filtered);
+    }
+
+    // ── Serde ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let mut s = BroadcastState::default();
+        s.master = false;
+        s.set_app_route("brave", AppRoute::Filtered);
+
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: BroadcastState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(s2.master, false);
+        assert_eq!(s2.route_for("brave"), AppRoute::Filtered);
+        assert_eq!(s2.nodes.input_capture, s.nodes.input_capture);
+    }
+
+    #[test]
+    fn test_serde_missing_optional_fields() {
+        // Minimal JSON without nodes or app_routes — serde defaults should kick in
+        let json = r#"{"master":true,"input_filter":true,"output_filter":false,"default_route":"filtered"}"#;
+        let s: BroadcastState = serde_json::from_str(json).unwrap();
+        assert!(s.app_routes.is_empty());
+        assert_eq!(s.nodes.output_sink, "broadcast_filter_sink");
+        assert_eq!(s.default_route, AppRoute::Filtered);
+        assert!(!s.output_filter);
+    }
+
+    // ── File I/O (load / save) ─────────────────────────────────────────
+
+    #[test]
+    fn test_load_missing_file() {
+        let dir = std::env::temp_dir().join(format!("broadcast_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Point HOME to a fresh temp dir that has no config.json
+        std::env::set_var("HOME", &dir);
+        let state = BroadcastState::load().unwrap();
+        assert_eq!(state.default_route, AppRoute::Direct);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_save_and_load() {
+        let dir = std::env::temp_dir().join(format!("broadcast_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+
+        let mut s = BroadcastState::default();
+        s.master = false;
+        s.set_app_route("brave", AppRoute::Filtered);
+        s.save().unwrap();
+
+        let loaded = BroadcastState::load().unwrap();
+        assert_eq!(loaded.master, false);
+        assert_eq!(loaded.route_for("brave"), AppRoute::Filtered);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_corrupt_json() {
+        let dir = std::env::temp_dir().join(format!("broadcast_corrupt_{}", std::process::id()));
+        let state_dir = dir.join(STATE_DIR);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join(STATE_FILE), "NOT JSON {{{{").unwrap();
+        std::env::set_var("HOME", &dir);
+
+        assert!(BroadcastState::load().is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

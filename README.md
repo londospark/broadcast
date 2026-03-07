@@ -30,10 +30,35 @@ _Coming soon_
 
 ## Installation
 
-### From GitHub Releases (pre-built binaries)
+### Arch Linux / CachyOS / Manjaro (AUR)
 
 ```sh
-# Download latest release
+paru -S broadcast-bin   # pre-built binaries
+# or
+paru -S broadcast-git   # build from source
+```
+
+### Ubuntu / Debian / Mint / Pop!_OS (.deb)
+
+Download the `.deb` from the [latest release](https://github.com/londospark/broadcast/releases/latest):
+
+```sh
+# Install both packages
+sudo dpkg -i broadcast-ctl_*.deb broadcast-gui_*.deb
+sudo apt-get install -f  # resolve any missing dependencies
+```
+
+### Fedora / openSUSE (.rpm)
+
+Download the `.rpm` from the [latest release](https://github.com/londospark/broadcast/releases/latest):
+
+```sh
+sudo rpm -i broadcast-ctl-*.rpm broadcast-gui-*.rpm
+```
+
+### From GitHub Releases (any distro)
+
+```sh
 gh release download --repo londospark/broadcast -p 'broadcast-ctl' -p 'broadcast-gui' --dir ~/.local/bin/
 chmod +x ~/.local/bin/broadcast-ctl ~/.local/bin/broadcast-gui
 ```
@@ -45,14 +70,6 @@ git clone https://github.com/londospark/broadcast.git
 cd broadcast
 cargo build --release
 cp target/release/broadcast-ctl target/release/broadcast-gui ~/.local/bin/
-```
-
-### AUR (Arch Linux)
-
-```sh
-paru -S broadcast-bin   # pre-built binaries
-# or
-paru -S broadcast-git   # build from source
 ```
 
 ## Setup

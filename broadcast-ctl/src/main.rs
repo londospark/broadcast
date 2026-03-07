@@ -1,10 +1,14 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use broadcast_core::backend::{PipeWireBackend, RealBackend};
 use broadcast_core::{filter, routing, state::BroadcastState};
 
 #[derive(Parser)]
-#[command(name = "broadcast-ctl", about = "AI noise suppression control for PipeWire")]
+#[command(
+    name = "broadcast-ctl",
+    about = "AI noise suppression control for PipeWire"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -42,27 +46,28 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let backend = RealBackend;
 
     match cli.command {
-        Commands::Toggle => cmd_toggle()?,
-        Commands::On => cmd_set(true)?,
-        Commands::Off => cmd_set(false)?,
-        Commands::Status { ironbar, json } => cmd_status(ironbar, json)?,
-        Commands::Route { app, mode } => cmd_route(&app, &mode)?,
-        Commands::Apps => cmd_apps()?,
-        Commands::Apply => cmd_apply()?,
+        Commands::Toggle => cmd_toggle(&backend)?,
+        Commands::On => cmd_set(&backend, true)?,
+        Commands::Off => cmd_set(&backend, false)?,
+        Commands::Status { ironbar, json } => cmd_status(&backend, ironbar, json)?,
+        Commands::Route { app, mode } => cmd_route(&backend, &app, &mode)?,
+        Commands::Apps => cmd_apps(&backend)?,
+        Commands::Apply => cmd_apply(&backend)?,
     }
     Ok(())
 }
 
-fn cmd_toggle() -> Result<()> {
+fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
     let mut state = BroadcastState::load()?;
     state.output_filter = !state.output_filter;
 
     if state.output_filter {
-        routing::apply_routes(&state.app_routes, state.default_route)?;
+        routing::apply_routes(backend, &state)?;
     } else {
-        routing::bypass_all()?;
+        routing::bypass_all(backend, &state)?;
     }
 
     state.save()?;
@@ -73,14 +78,14 @@ fn cmd_toggle() -> Result<()> {
     Ok(())
 }
 
-fn cmd_set(active: bool) -> Result<()> {
+fn cmd_set(backend: &dyn PipeWireBackend, active: bool) -> Result<()> {
     let mut state = BroadcastState::load()?;
     state.master = active;
 
-    filter::set_filter_active(active)?;
+    filter::set_filter_active(backend, &state, active)?;
 
     if active {
-        routing::apply_routes(&state.app_routes, state.default_route)?;
+        routing::apply_routes(backend, &state)?;
     }
 
     state.save()?;
@@ -91,9 +96,9 @@ fn cmd_set(active: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(ironbar: bool, json: bool) -> Result<()> {
+fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Result<()> {
     let state = BroadcastState::load()?;
-    let loaded = filter::filters_loaded().unwrap_or(false);
+    let loaded = filter::filters_loaded(backend, &state).unwrap_or(false);
 
     if json {
         let status = serde_json::json!({
@@ -118,8 +123,14 @@ fn cmd_status(ironbar: bool, json: bool) -> Result<()> {
         let filter_status = if loaded { "loaded" } else { "not loaded" };
         println!("Broadcast: {status}");
         println!("Filters: {filter_status}");
-        println!("Input filter: {}", if state.input_filter { "on" } else { "off" });
-        println!("Output filter: {}", if state.output_filter { "on" } else { "off" });
+        println!(
+            "Input filter: {}",
+            if state.input_filter { "on" } else { "off" }
+        );
+        println!(
+            "Output filter: {}",
+            if state.output_filter { "on" } else { "off" }
+        );
         println!("Default route: {}", state.default_route);
         if !state.app_routes.is_empty() {
             println!("App routes:");
@@ -131,13 +142,13 @@ fn cmd_status(ironbar: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_route(app: &str, mode: &str) -> Result<()> {
+fn cmd_route(backend: &dyn PipeWireBackend, app: &str, mode: &str) -> Result<()> {
     let route: broadcast_core::state::AppRoute = mode.parse()?;
     let mut state = BroadcastState::load()?;
 
     // Apply immediately if master is on
     if state.master {
-        let moved = routing::route_app(app, route)?;
+        let moved = routing::route_app(backend, &state, app, route)?;
         eprintln!("Routed {moved} stream(s) for '{app}' → {route}");
     }
 
@@ -147,8 +158,9 @@ fn cmd_route(app: &str, mode: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_apps() -> Result<()> {
-    let apps = routing::list_apps()?;
+fn cmd_apps(backend: &dyn PipeWireBackend) -> Result<()> {
+    let state = BroadcastState::load()?;
+    let apps = routing::list_apps(backend, &state)?;
     if apps.is_empty() {
         println!("No audio streams playing.");
         return Ok(());
@@ -168,13 +180,13 @@ fn cmd_apps() -> Result<()> {
     Ok(())
 }
 
-fn cmd_apply() -> Result<()> {
+fn cmd_apply(backend: &dyn PipeWireBackend) -> Result<()> {
     let state = BroadcastState::load()?;
     if !state.master {
         eprintln!("Broadcast is OFF — not applying routes");
         return Ok(());
     }
-    routing::apply_routes(&state.app_routes, state.default_route)?;
+    routing::apply_routes(backend, &state)?;
     eprintln!("Applied saved routing preferences");
     Ok(())
 }
