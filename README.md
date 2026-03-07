@@ -150,4 +150,4 @@ App Output:   App → "Broadcast Filter" sink → DeepFilterNet (stereo) → Spe
 
 ## License
 
-MIT
+GPL-3.0-or-later — see [LICENSE](LICENSE).
