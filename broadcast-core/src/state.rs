@@ -225,14 +225,16 @@ mod tests {
 
     #[test]
     fn test_serde_roundtrip() {
-        let mut s = BroadcastState::default();
-        s.master = false;
+        let mut s = BroadcastState {
+            master: false,
+            ..Default::default()
+        };
         s.set_app_route("brave", AppRoute::Filtered);
 
         let json = serde_json::to_string(&s).unwrap();
         let s2: BroadcastState = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(s2.master, false);
+        assert!(!s2.master);
         assert_eq!(s2.route_for("brave"), AppRoute::Filtered);
         assert_eq!(s2.nodes.input_capture, s.nodes.input_capture);
     }
@@ -263,13 +265,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("broadcast_save_{}", std::process::id()));
         let path = dir.join("config.json");
 
-        let mut s = BroadcastState::default();
-        s.master = false;
+        let mut s = BroadcastState {
+            master: false,
+            ..Default::default()
+        };
         s.set_app_route("brave", AppRoute::Filtered);
         s.save_to(&path).unwrap();
 
         let loaded = BroadcastState::load_from(&path).unwrap();
-        assert_eq!(loaded.master, false);
+        assert!(!loaded.master);
         assert_eq!(loaded.route_for("brave"), AppRoute::Filtered);
 
         std::fs::remove_dir_all(&dir).ok();
