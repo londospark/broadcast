@@ -2,9 +2,32 @@
 name = "broadcast-ctl"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description = "CLI tool for controlling AI-powered per-application noise suppression for PipeWire"
 
 [dependencies]
 broadcast-core = { path = "../broadcast-core" }
 clap = { version = "4", features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[package.metadata.deb]
+maintainer = "londospark <londospark@users.noreply.github.com>"
+copyright = "2026 londospark"
+license-file = ["../LICENSE", "0"]
+extended-description = "CLI tool for controlling AI-powered per-application noise suppression for PipeWire"
+depends = "pipewire, pipewire-pulse"
+section = "sound"
+priority = "optional"
+assets = [
+    ["target/release/broadcast-ctl", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/broadcast-ctl", dest = "/usr/bin/broadcast-ctl", mode = "755" },
+]
+
+[package.metadata.generate-rpm.requires]
+pipewire = "*"
+pipewire-pulseaudio = "*"

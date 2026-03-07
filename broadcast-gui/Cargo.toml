@@ -2,6 +2,8 @@
 name = "broadcast-gui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+description = "GTK4 GUI for AI-powered per-application noise suppression for PipeWire"
 
 [dependencies]
 broadcast-core = { path = "../broadcast-core" }
@@ -9,3 +11,28 @@ gtk = { package = "gtk4", version = "0.9" }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[package.metadata.deb]
+maintainer = "londospark <londospark@users.noreply.github.com>"
+copyright = "2026 londospark"
+license-file = ["../LICENSE", "0"]
+extended-description = "GTK4 GUI for AI-powered per-application noise suppression for PipeWire"
+depends = "pipewire, pipewire-pulse, libgtk-4-1, libadwaita-1-0"
+section = "sound"
+priority = "optional"
+assets = [
+    ["target/release/broadcast-gui", "usr/bin/", "755"],
+    ["../broadcast-gui.desktop", "usr/share/applications/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/broadcast-gui", dest = "/usr/bin/broadcast-gui", mode = "755" },
+    { source = "broadcast-gui.desktop", dest = "/usr/share/applications/broadcast-gui.desktop", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+pipewire = "*"
+pipewire-pulseaudio = "*"
+gtk4 = "*"
+libadwaita = "*"

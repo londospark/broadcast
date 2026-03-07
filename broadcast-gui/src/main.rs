@@ -1,15 +1,13 @@
 mod app;
-mod window;
 mod app_row;
+mod window;
 
 use adw::prelude::*;
 
 const APP_ID: &str = "dev.dotfiles.broadcast";
 
 fn main() {
-    let app = adw::Application::builder()
-        .application_id(APP_ID)
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
         let win = window::BroadcastWindow::new(app);

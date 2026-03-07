@@ -9,36 +9,107 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
-
     steps:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm base-devel git rust gtk4 libadwaita
+      - uses: actions/checkout@v4
+      - run: cargo test
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
+  build-arch:
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita
+      - uses: actions/checkout@v4
       - name: Build release binaries
         run: cargo build --release
-
-      - name: Prepare release assets
+      - name: Prepare assets
         run: |
           mkdir -p release
-          cp target/release/broadcast-ctl release/broadcast-ctl
-          cp target/release/broadcast-gui release/broadcast-gui
+          cp target/release/broadcast-ctl release/
+          cp target/release/broadcast-gui release/
           chmod +x release/broadcast-ctl release/broadcast-gui
           cd release && tar czf broadcast-x86_64-linux.tar.gz broadcast-ctl broadcast-gui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-binaries
+          path: release/
 
+  build-deb:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+      - name: Build deb (broadcast-ctl)
+        run: cargo deb -p broadcast-ctl
+      - name: Build deb (broadcast-gui)
+        run: cargo deb -p broadcast-gui
+      - name: Collect debs
+        run: |
+          mkdir -p release
+          cp target/debian/*.deb release/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: release/
+
+  build-rpm:
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y gcc gtk4-devel libadwaita-devel pkg-config rust cargo git
+      - uses: actions/checkout@v4
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+      - name: Build release
+        run: cargo build --release
+      - name: Generate RPMs
+        run: |
+          mkdir -p release
+          cargo generate-rpm -p broadcast-ctl -o release/
+          cargo generate-rpm -p broadcast-gui -o release/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages
+          path: release/
+
+  release:
+    needs: [build-arch, build-deb, build-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/broadcast-ctl
-            release/broadcast-gui
-            release/broadcast-x86_64-linux.tar.gz
+            artifacts/arch-binaries/broadcast-ctl
+            artifacts/arch-binaries/broadcast-gui
+            artifacts/arch-binaries/broadcast-x86_64-linux.tar.gz
+            artifacts/deb-packages/*.deb
+            artifacts/rpm-packages/*.rpm
           generate_release_notes: true

@@ -3,6 +3,7 @@ use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use std::cell::RefCell;
 
+use broadcast_core::backend::RealBackend;
 use broadcast_core::state::{AppRoute, BroadcastState};
 use broadcast_core::{filter, routing};
 
@@ -121,9 +122,7 @@ impl BroadcastWindow {
         content.append(&app_group);
 
         // Default route section
-        let default_group = adw::PreferencesGroup::builder()
-            .title("Defaults")
-            .build();
+        let default_group = adw::PreferencesGroup::builder().title("Defaults").build();
 
         let default_row = adw::ActionRow::builder()
             .title("New apps default to")
@@ -137,9 +136,11 @@ impl BroadcastWindow {
         default_row.add_suffix(&default_switch);
         default_row.set_activatable_widget(Some(&default_switch));
 
-        let default_label = gtk::Label::new(Some(
-            if state.default_route == AppRoute::Filtered { "Filtered" } else { "Direct" }
-        ));
+        let default_label = gtk::Label::new(Some(if state.default_route == AppRoute::Filtered {
+            "Filtered"
+        } else {
+            "Direct"
+        }));
         default_label.add_css_class("dim-label");
         default_row.add_suffix(&default_label);
 
@@ -169,11 +170,12 @@ impl BroadcastWindow {
         // Connect master switch
         let win = self.clone();
         master_switch.connect_state_set(move |_switch, active| {
+            let backend = RealBackend;
             let mut state = win.imp().state.borrow_mut();
             state.master = active;
-            let _ = filter::set_filter_active(active);
+            let _ = filter::set_filter_active(&backend, &state, active);
             if active {
-                let _ = routing::apply_routes(&state.app_routes, state.default_route);
+                let _ = routing::apply_routes(&backend, &state);
             }
             let _ = state.save();
 
@@ -193,7 +195,11 @@ impl BroadcastWindow {
         let win = self.clone();
         default_switch.connect_state_set(move |_switch, active| {
             let mut state = win.imp().state.borrow_mut();
-            state.default_route = if active { AppRoute::Filtered } else { AppRoute::Direct };
+            state.default_route = if active {
+                AppRoute::Filtered
+            } else {
+                AppRoute::Direct
+            };
             default_label.set_text(if active { "Filtered" } else { "Direct" });
             let _ = state.save();
             glib::Propagation::Proceed
@@ -213,12 +219,13 @@ impl BroadcastWindow {
             app_list.remove(&child);
         }
 
-        let apps = match routing::list_apps() {
+        let backend = RealBackend;
+        let state = imp.state.borrow();
+
+        let apps = match routing::list_apps(&backend, &state) {
             Ok(apps) => apps,
             Err(_) => return,
         };
-
-        let state = imp.state.borrow();
 
         for app in &apps {
             let name = if !app.name.is_empty() {
@@ -233,11 +240,16 @@ impl BroadcastWindow {
             let win = self.clone();
             let binary = app.binary.clone();
             row.connect_route_changed(move |route| {
-                let mut state = win.imp().state.borrow_mut();
-                state.set_app_route(&binary, route);
-                let _ = state.save();
-                if state.master {
-                    let _ = routing::route_app(&binary, route);
+                let backend = RealBackend;
+                let master = {
+                    let mut state = win.imp().state.borrow_mut();
+                    state.set_app_route(&binary, route);
+                    let _ = state.save();
+                    state.master
+                };
+                if master {
+                    let state = win.imp().state.borrow();
+                    let _ = routing::route_app(&backend, &state, &binary, route);
                 }
             });
 

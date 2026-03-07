@@ -1,16 +1,16 @@
-use gtk::prelude::*;
-use gtk::glib;
 use adw::prelude::*;
+use gtk::glib;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use broadcast_core::state::AppRoute;
 
+type RouteCallback = Rc<RefCell<Option<Box<dyn Fn(AppRoute)>>>>;
+
 /// A row in the app list showing an app name with a filter toggle.
 pub struct AppRow {
     row: adw::ActionRow,
-    switch: gtk::Switch,
-    on_route_changed: Rc<RefCell<Option<Box<dyn Fn(AppRoute)>>>>,
+    on_route_changed: RouteCallback,
 }
 
 impl AppRow {
@@ -36,22 +36,29 @@ impl AppRow {
         let switch = gtk::Switch::new();
         switch.set_active(current_route == AppRoute::Filtered);
         switch.set_valign(gtk::Align::Center);
-        switch.set_tooltip_text(Some("On = filtered through DeepFilterNet, Off = direct to speakers"));
+        switch.set_tooltip_text(Some(
+            "On = filtered through DeepFilterNet, Off = direct to speakers",
+        ));
         row.add_suffix(&switch);
         row.set_activatable_widget(Some(&switch));
 
-        let label = gtk::Label::new(Some(
-            if current_route == AppRoute::Filtered { "Filtered" } else { "Direct" }
-        ));
+        let label = gtk::Label::new(Some(if current_route == AppRoute::Filtered {
+            "Filtered"
+        } else {
+            "Direct"
+        }));
         label.add_css_class("dim-label");
         row.add_suffix(&label);
 
-        let on_route_changed: Rc<RefCell<Option<Box<dyn Fn(AppRoute)>>>> =
-            Rc::new(RefCell::new(None));
+        let on_route_changed: RouteCallback = Rc::new(RefCell::new(None));
 
         let cb = on_route_changed.clone();
         switch.connect_state_set(move |_switch, active| {
-            let route = if active { AppRoute::Filtered } else { AppRoute::Direct };
+            let route = if active {
+                AppRoute::Filtered
+            } else {
+                AppRoute::Direct
+            };
             label.set_text(if active { "Filtered" } else { "Direct" });
             if let Some(ref f) = *cb.borrow() {
                 f(route);
@@ -61,7 +68,6 @@ impl AppRow {
 
         Self {
             row,
-            switch,
             on_route_changed,
         }
     }
