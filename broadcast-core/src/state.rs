@@ -85,22 +85,28 @@ impl BroadcastState {
     }
 
     pub fn load() -> Result<Self> {
-        let path = Self::state_path();
+        Self::load_from(&Self::state_path())
+    }
+
+    pub fn load_from(path: &PathBuf) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let data = fs::read_to_string(&path).context("Failed to read state file")?;
+        let data = fs::read_to_string(path).context("Failed to read state file")?;
         let state: Self = serde_json::from_str(&data).context("Failed to parse state file")?;
         Ok(state)
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::state_path();
+        self.save_to(&Self::state_path())
+    }
+
+    pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("Failed to create state directory")?;
         }
         let data = serde_json::to_string_pretty(self)?;
-        fs::write(&path, data).context("Failed to write state file")?;
+        fs::write(path, data).context("Failed to write state file")?;
         Ok(())
     }
 
@@ -246,27 +252,23 @@ mod tests {
 
     #[test]
     fn test_load_missing_file() {
-        let dir = std::env::temp_dir().join(format!("broadcast_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // Point HOME to a fresh temp dir that has no config.json
-        std::env::set_var("HOME", &dir);
-        let state = BroadcastState::load().unwrap();
+        let path =
+            std::env::temp_dir().join(format!("broadcast_test_{}/config.json", std::process::id()));
+        let state = BroadcastState::load_from(&path).unwrap();
         assert_eq!(state.default_route, AppRoute::Direct);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn test_save_and_load() {
         let dir = std::env::temp_dir().join(format!("broadcast_save_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("HOME", &dir);
+        let path = dir.join("config.json");
 
         let mut s = BroadcastState::default();
         s.master = false;
         s.set_app_route("brave", AppRoute::Filtered);
-        s.save().unwrap();
+        s.save_to(&path).unwrap();
 
-        let loaded = BroadcastState::load().unwrap();
+        let loaded = BroadcastState::load_from(&path).unwrap();
         assert_eq!(loaded.master, false);
         assert_eq!(loaded.route_for("brave"), AppRoute::Filtered);
 
@@ -276,12 +278,11 @@ mod tests {
     #[test]
     fn test_load_corrupt_json() {
         let dir = std::env::temp_dir().join(format!("broadcast_corrupt_{}", std::process::id()));
-        let state_dir = dir.join(STATE_DIR);
-        std::fs::create_dir_all(&state_dir).unwrap();
-        std::fs::write(state_dir.join(STATE_FILE), "NOT JSON {{{{").unwrap();
-        std::env::set_var("HOME", &dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "NOT JSON {{{{").unwrap();
 
-        assert!(BroadcastState::load().is_err());
+        assert!(BroadcastState::load_from(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }
