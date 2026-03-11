@@ -3,6 +3,7 @@ mod app_row;
 mod window;
 
 use adw::prelude::*;
+use gtk::gio;
 
 const APP_ID: &str = "dev.dotfiles.broadcast";
 
@@ -14,7 +15,20 @@ fn main() {
         .filter_map(|a| (a.as_str() != "--menu").then_some(a.as_str()))
         .collect();
 
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // In menu mode each invocation must be its own process: if broadcast-gui was
+    // already running as a normal window the GApplication single-instance mechanism
+    // would forward the activate signal to that process with no argument payload,
+    // silently ignoring --menu.  NON_UNIQUE prevents that.
+    let flags = if menu_mode {
+        gio::ApplicationFlags::NON_UNIQUE
+    } else {
+        gio::ApplicationFlags::empty()
+    };
+
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(flags)
+        .build();
 
     app.connect_activate(move |app| {
         if !menu_mode {

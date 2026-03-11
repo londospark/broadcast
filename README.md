@@ -26,6 +26,7 @@ _Coming soon_
 - **DeepFilterNet LADSPA plugin** — provides the AI noise suppression
   - Arch/CachyOS: `paru -S libdeep_filter_ladspa-git`
 - **GTK4 + Libadwaita** (for the GUI)
+- **gtk4-layer-shell** (for the `--menu` popup mode — already present on any system running Ironbar)
 - PipeWire filter chain configs (see [examples/](examples/))
 
 ## Installation

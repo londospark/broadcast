@@ -1,7 +1,9 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use broadcast_core::backend::RealBackend;
 use broadcast_core::state::{AppRoute, BroadcastState};
@@ -50,12 +52,31 @@ impl BroadcastWindow {
             .build();
 
         if menu_mode {
-            // Popup / flyout behaviour: no window decorations, not resizable,
-            // and the window closes automatically when it loses keyboard focus.
-            win.set_decorated(false);
+            // Use the Wayland Layer Shell protocol when available so the popup
+            // is a proper layer surface: it won't be tiled or snapped by the
+            // compositor, and focus-loss detection is reliable.
+            if gtk4_layer_shell::is_layer_shell_available() {
+                win.init_layer_shell();
+                win.set_layer(Layer::Top);
+                // OnDemand: the surface gains keyboard focus when the user
+                // clicks into it rather than stealing focus on creation.
+                win.set_keyboard_mode(KeyboardMode::OnDemand);
+            } else {
+                // Fallback for X11 / compositors without layer-shell support.
+                win.set_decorated(false);
+            }
             win.set_resizable(false);
-            win.connect_is_active_notify(|w| {
-                if !w.is_active() {
+
+            // Close the popup when it loses focus, but only after it has been
+            // active at least once.  Without the guard the window can flash and
+            // disappear immediately on wlroots compositors (Hyprland, niri, …)
+            // because is_active toggles during the initial presentation before
+            // focus has transferred from the bar surface.
+            let was_active = Rc::new(Cell::new(false));
+            win.connect_is_active_notify(move |w| {
+                if w.is_active() {
+                    was_active.set(true);
+                } else if was_active.get() {
                     w.close();
                 }
             });
