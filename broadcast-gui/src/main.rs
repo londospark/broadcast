@@ -10,7 +10,7 @@ fn main() {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
-        if let Some(win) = app.active_window() {
+        if let Some(win) = app.windows().first() {
             win.present();
             return;
         }
