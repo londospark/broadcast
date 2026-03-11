@@ -10,6 +10,10 @@ fn main() {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
+        if let Some(win) = app.active_window() {
+            win.present();
+            return;
+        }
         let win = window::BroadcastWindow::new(app);
         win.present();
     });
