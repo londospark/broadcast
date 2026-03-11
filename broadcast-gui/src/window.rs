@@ -36,17 +36,30 @@ mod imp {
 glib::wrapper! {
     pub struct BroadcastWindow(ObjectSubclass<imp::BroadcastWindow>)
         @extends adw::ApplicationWindow, gtk::ApplicationWindow, gtk::Window, gtk::Widget,
-        @implements gio::ActionGroup, gio::ActionMap;
+        @implements gio::ActionGroup, gio::ActionMap, gtk::Accessible, gtk::Buildable,
+                    gtk::ConstraintTarget, gtk::Native, gtk::Root, gtk::ShortcutManager;
 }
 
 impl BroadcastWindow {
-    pub fn new(app: &adw::Application) -> Self {
+    pub fn new(app: &adw::Application, menu_mode: bool) -> Self {
         let win: Self = glib::Object::builder()
             .property("application", app)
             .property("title", "Broadcast")
             .property("default-width", 560)
             .property("default-height", 520)
             .build();
+
+        if menu_mode {
+            // Popup / flyout behaviour: no window decorations, not resizable,
+            // and the window closes automatically when it loses keyboard focus.
+            win.set_decorated(false);
+            win.set_resizable(false);
+            win.connect_is_active_notify(|w| {
+                if !w.is_active() {
+                    w.close();
+                }
+            });
+        }
 
         win.setup_ui();
         win.refresh_apps();
