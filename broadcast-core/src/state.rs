@@ -63,6 +63,12 @@ pub struct BroadcastState {
     pub app_routes: HashMap<String, AppRoute>,
     #[serde(default)]
     pub nodes: NodeNames,
+    /// Preferred output sink node.name (None = auto-detect first hardware sink)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_output_sink: Option<String>,
+    /// Preferred input source node.name (None = auto-detect)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_input_source: Option<String>,
 }
 
 impl Default for BroadcastState {
@@ -74,6 +80,8 @@ impl Default for BroadcastState {
             default_route: AppRoute::Direct,
             app_routes: HashMap::new(),
             nodes: NodeNames::default(),
+            preferred_output_sink: None,
+            preferred_input_source: None,
         }
     }
 }
@@ -122,6 +130,16 @@ impl BroadcastState {
     /// Set the route for a specific app.
     pub fn set_app_route(&mut self, app_binary: &str, route: AppRoute) {
         self.app_routes.insert(app_binary.to_lowercase(), route);
+    }
+
+    /// Set the preferred output sink (None to auto-detect).
+    pub fn set_preferred_output_sink(&mut self, sink_name: Option<String>) {
+        self.preferred_output_sink = sink_name;
+    }
+
+    /// Set the preferred input source (None to auto-detect).
+    pub fn set_preferred_input_source(&mut self, source_name: Option<String>) {
+        self.preferred_input_source = source_name;
     }
 }
 
@@ -240,14 +258,43 @@ mod tests {
     }
 
     #[test]
+    fn test_serde_roundtrip_with_preferred_devices() {
+        let mut s = BroadcastState::default();
+        s.set_preferred_output_sink(Some("alsa_output.pci-0000_0c_00.4.analog-stereo".into()));
+        s.set_preferred_input_source(Some("alsa_input.pci-0000_0c_00.4.analog-stereo".into()));
+
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: BroadcastState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            s2.preferred_output_sink.as_deref(),
+            Some("alsa_output.pci-0000_0c_00.4.analog-stereo")
+        );
+        assert_eq!(
+            s2.preferred_input_source.as_deref(),
+            Some("alsa_input.pci-0000_0c_00.4.analog-stereo")
+        );
+    }
+
+    #[test]
     fn test_serde_missing_optional_fields() {
-        // Minimal JSON without nodes or app_routes — serde defaults should kick in
+        // Minimal JSON without nodes, app_routes, or preferred devices — serde defaults should kick in
         let json = r#"{"master":true,"input_filter":true,"output_filter":false,"default_route":"filtered"}"#;
         let s: BroadcastState = serde_json::from_str(json).unwrap();
         assert!(s.app_routes.is_empty());
         assert_eq!(s.nodes.output_sink, "broadcast_filter_sink");
         assert_eq!(s.default_route, AppRoute::Filtered);
         assert!(!s.output_filter);
+        assert!(s.preferred_output_sink.is_none());
+        assert!(s.preferred_input_source.is_none());
+    }
+
+    #[test]
+    fn test_preferred_devices_not_serialized_when_none() {
+        let s = BroadcastState::default();
+        let json = serde_json::to_string_pretty(&s).unwrap();
+        assert!(!json.contains("preferred_output_sink"));
+        assert!(!json.contains("preferred_input_source"));
     }
 
     // ── File I/O (load / save) ─────────────────────────────────────────

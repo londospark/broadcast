@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use broadcast_core::backend::RealBackend;
 use broadcast_core::state::{AppRoute, BroadcastState};
-use broadcast_core::{filter, routing};
+use broadcast_core::{filter, routing, AudioDevice};
 
 use crate::app_row::AppRow;
 
@@ -44,7 +44,7 @@ impl BroadcastWindow {
         let win: Self = glib::Object::builder()
             .property("application", app)
             .property("title", "Broadcast")
-            .property("default-width", 420)
+            .property("default-width", 560)
             .property("default-height", 520)
             .build();
 
@@ -67,6 +67,15 @@ impl BroadcastWindow {
 
     fn setup_ui(&self) {
         let state = BroadcastState::load().unwrap_or_default();
+
+        // Make combo-row dropdown popovers wide enough for full device names
+        let css = gtk::CssProvider::new();
+        css.load_from_data("popover > contents > scrolledwindow { min-width: 500px; }");
+        gtk::style_context_add_provider_for_display(
+            &self.display(),
+            &css,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
 
         // Header bar
         let header = adw::HeaderBar::new();
@@ -105,6 +114,39 @@ impl BroadcastWindow {
 
         mic_group.add(&mic_row);
         content.append(&mic_group);
+
+        // Device selection section
+        let device_group = adw::PreferencesGroup::builder()
+            .title("Audio Devices")
+            .description("Select which hardware devices to use")
+            .build();
+        device_group.set_margin_bottom(18);
+
+        let backend = RealBackend;
+
+        // Output device combo
+        let output_devices =
+            broadcast_core::list_output_devices(&backend, &state.nodes.output_sink)
+                .unwrap_or_default();
+        let output_combo = Self::build_device_combo(
+            "Output Device",
+            "Speakers / headphones for direct playback",
+            &output_devices,
+            state.preferred_output_sink.as_deref(),
+        );
+        device_group.add(&output_combo);
+
+        // Input device combo
+        let input_devices = broadcast_core::list_input_devices(&backend).unwrap_or_default();
+        let input_combo = Self::build_device_combo(
+            "Input Device",
+            "Microphone fed into DeepFilterNet",
+            &input_devices,
+            state.preferred_input_source.as_deref(),
+        );
+        device_group.add(&input_combo);
+
+        content.append(&device_group);
 
         // App list section
         let app_group = adw::PreferencesGroup::builder()
@@ -204,6 +246,73 @@ impl BroadcastWindow {
             let _ = state.save();
             glib::Propagation::Proceed
         });
+
+        // Connect output device combo
+        let win = self.clone();
+        output_combo.connect_selected_notify(move |combo| {
+            let idx = combo.selected();
+            let mut state = win.imp().state.borrow_mut();
+            if idx == 0 {
+                state.set_preferred_output_sink(None);
+            } else {
+                let dev_idx = (idx - 1) as usize;
+                if dev_idx < output_devices.len() {
+                    state.set_preferred_output_sink(Some(output_devices[dev_idx].name.clone()));
+                }
+            }
+            let _ = state.save();
+            if state.master {
+                let backend = RealBackend;
+                let _ = routing::apply_routes(&backend, &state);
+            }
+        });
+
+        // Connect input device combo
+        let win = self.clone();
+        input_combo.connect_selected_notify(move |combo| {
+            let idx = combo.selected();
+            let mut state = win.imp().state.borrow_mut();
+            if idx == 0 {
+                state.set_preferred_input_source(None);
+            } else {
+                let dev_idx = (idx - 1) as usize;
+                if dev_idx < input_devices.len() {
+                    state.set_preferred_input_source(Some(input_devices[dev_idx].name.clone()));
+                }
+            }
+            let _ = state.save();
+        });
+    }
+
+    fn build_device_combo(
+        title: &str,
+        subtitle: &str,
+        devices: &[AudioDevice],
+        current_pref: Option<&str>,
+    ) -> adw::ComboRow {
+        let model = gtk::StringList::new(&[]);
+        model.append("(Auto-detect)");
+        for dev in devices {
+            model.append(&dev.description);
+        }
+
+        let selected: u32 = match current_pref {
+            Some(pref) => devices
+                .iter()
+                .position(|d| d.name == pref)
+                .map(|i| (i + 1) as u32)
+                .unwrap_or(0),
+            None => 0,
+        };
+
+        let combo = adw::ComboRow::builder()
+            .title(title)
+            .subtitle(subtitle)
+            .model(&model)
+            .selected(selected)
+            .build();
+
+        combo
     }
 
     fn refresh_apps(&self) {

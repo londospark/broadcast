@@ -21,6 +21,8 @@ pub trait PipeWireBackend {
     fn get_default_sink(&self) -> Result<String>;
     /// List all sinks as JSON (pactl list sinks).
     fn list_sinks(&self) -> Result<Vec<serde_json::Value>>;
+    /// List all sources as JSON (pactl list sources).
+    fn list_sources(&self) -> Result<Vec<serde_json::Value>>;
 }
 
 /// Real implementation that shells out to pw-dump, pactl, pw-cli, wpctl.
@@ -98,5 +100,15 @@ impl PipeWireBackend for RealBackend {
         let sinks: Vec<serde_json::Value> =
             serde_json::from_slice(&output.stdout).unwrap_or_default();
         Ok(sinks)
+    }
+
+    fn list_sources(&self) -> Result<Vec<serde_json::Value>> {
+        let output = Command::new("pactl")
+            .args(["--format=json", "list", "sources"])
+            .output()
+            .context("Failed to run pactl list sources")?;
+        let sources: Vec<serde_json::Value> =
+            serde_json::from_slice(&output.stdout).unwrap_or_default();
+        Ok(sources)
     }
 }

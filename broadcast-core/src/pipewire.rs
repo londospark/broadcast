@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::backend::{PipeWireBackend, RealBackend};
 
@@ -27,6 +27,105 @@ pub struct SinkInput {
     pub client_name: String,
     pub app_binary: String,
     pub media_name: String,
+}
+
+/// An available audio device (sink or source) with a user-friendly description.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioDevice {
+    /// PipeWire node.name (stable identifier, e.g. "alsa_output.pci-0000_0c_00.4.analog-stereo")
+    pub name: String,
+    /// Human-readable description (e.g. "Starship/Matisse HD Audio Controller Analog Stereo")
+    pub description: String,
+}
+
+/// Parse pactl JSON sinks into a list of available hardware output devices,
+/// filtering out broadcast filter sinks and virtual sinks.
+pub fn parse_sinks_as_devices(
+    sinks: &[serde_json::Value],
+    filter_sink_name: &str,
+) -> Vec<AudioDevice> {
+    let mut devices = Vec::new();
+    for sink in sinks {
+        let props = sink.get("properties").and_then(|v| v.as_object());
+        let name = props
+            .and_then(|p| p.get("node.name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if name.is_empty() || name == filter_sink_name || name.contains("broadcast_filter") {
+            continue;
+        }
+        let media_class = props
+            .and_then(|p| p.get("media.class"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if media_class.contains("Virtual") {
+            continue;
+        }
+        let description = props
+            .and_then(|p| p.get("node.description"))
+            .and_then(|v| v.as_str())
+            .or_else(|| sink.get("description").and_then(|v| v.as_str()))
+            .or_else(|| {
+                props
+                    .and_then(|p| p.get("node.nick"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or(name)
+            .to_string();
+        devices.push(AudioDevice {
+            name: name.to_string(),
+            description,
+        });
+    }
+    devices
+}
+
+/// Parse pactl JSON sources into a list of available hardware input devices,
+/// filtering out monitors, virtual sources, and broadcast filter sources.
+pub fn parse_sources_as_devices(sources: &[serde_json::Value]) -> Vec<AudioDevice> {
+    let mut devices = Vec::new();
+    for source in sources {
+        let props = source.get("properties").and_then(|v| v.as_object());
+        let name = props
+            .and_then(|p| p.get("node.name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let media_class = props
+            .and_then(|p| p.get("media.class"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Skip monitor sources (they mirror sink output) and virtual sources
+        if media_class.contains("Virtual") {
+            continue;
+        }
+        // Skip monitor sources — they have media.class "Audio/Sink" rather than "Audio/Source"
+        if media_class.contains("Sink") {
+            continue;
+        }
+        // Skip deepfilter virtual mic
+        if name.contains("deepfilter") {
+            continue;
+        }
+        let description = props
+            .and_then(|p| p.get("node.description"))
+            .and_then(|v| v.as_str())
+            .or_else(|| source.get("description").and_then(|v| v.as_str()))
+            .or_else(|| {
+                props
+                    .and_then(|p| p.get("node.nick"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or(name)
+            .to_string();
+        devices.push(AudioDevice {
+            name: name.to_string(),
+            description,
+        });
+    }
+    devices
 }
 
 // ---------------------------------------------------------------------------
@@ -313,5 +412,151 @@ mod tests {
             }
         })];
         assert_eq!(find_sink_index_in(&sinks, "nonexistent_sink"), None);
+    }
+
+    // ── parse_sinks_as_devices ─────────────────────────────────────────
+
+    #[test]
+    fn test_parse_sinks_as_devices_filters_correctly() {
+        let sinks = vec![
+            json!({
+                "index": 42,
+                "properties": {
+                    "node.name": "broadcast_filter_sink",
+                    "node.description": "Broadcast Filter",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            json!({
+                "index": 71,
+                "properties": {
+                    "node.name": "alsa_output.pci-0000_0a_00.1.hdmi-stereo",
+                    "node.description": "GPU HDMI",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            json!({
+                "index": 75,
+                "properties": {
+                    "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                    "node.description": "Motherboard Audio",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            json!({
+                "index": 12,
+                "properties": {
+                    "node.name": "virtual_sink",
+                    "node.description": "Virtual Sink",
+                    "media.class": "Audio/Sink/Virtual"
+                }
+            }),
+        ];
+        let devices = parse_sinks_as_devices(&sinks, "broadcast_filter_sink");
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "alsa_output.pci-0000_0a_00.1.hdmi-stereo");
+        assert_eq!(devices[0].description, "GPU HDMI");
+        assert_eq!(
+            devices[1].name,
+            "alsa_output.pci-0000_0c_00.4.analog-stereo"
+        );
+        assert_eq!(devices[1].description, "Motherboard Audio");
+    }
+
+    #[test]
+    fn test_parse_sinks_as_devices_empty() {
+        let devices = parse_sinks_as_devices(&[], "broadcast_filter_sink");
+        assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn test_parse_sinks_description_fallback_chain() {
+        let sinks = vec![
+            // Has node.description → use it
+            json!({
+                "properties": {
+                    "node.name": "sink_a",
+                    "node.description": "Friendly A",
+                    "node.nick": "Nick A",
+                    "media.class": "Audio/Sink"
+                },
+                "description": "Top-level A"
+            }),
+            // Missing node.description → fall back to top-level description
+            json!({
+                "properties": {
+                    "node.name": "sink_b",
+                    "node.nick": "Nick B",
+                    "media.class": "Audio/Sink"
+                },
+                "description": "Top-level B"
+            }),
+            // Missing both → fall back to node.nick
+            json!({
+                "properties": {
+                    "node.name": "sink_c",
+                    "node.nick": "Nick C",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            // Only node.name → use it as last resort
+            json!({
+                "properties": {
+                    "node.name": "sink_d",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+        ];
+        let devices = parse_sinks_as_devices(&sinks, "");
+        assert_eq!(devices.len(), 4);
+        assert_eq!(devices[0].description, "Friendly A");
+        assert_eq!(devices[1].description, "Top-level B");
+        assert_eq!(devices[2].description, "Nick C");
+        assert_eq!(devices[3].description, "sink_d");
+    }
+
+    // ── parse_sources_as_devices ───────────────────────────────────────
+
+    #[test]
+    fn test_parse_sources_as_devices_filters_correctly() {
+        let sources = vec![
+            json!({
+                "index": 41,
+                "properties": {
+                    "node.name": "deepfilter_mic",
+                    "node.description": "Clean Mic (DeepFilter)",
+                    "media.class": "Audio/Source"
+                }
+            }),
+            json!({
+                "index": 71,
+                "properties": {
+                    "node.name": "alsa_output.pci-0000_0a_00.1.hdmi-stereo",
+                    "node.description": "Monitor of GPU HDMI",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            json!({
+                "index": 76,
+                "properties": {
+                    "node.name": "alsa_input.pci-0000_0c_00.4.analog-stereo",
+                    "node.description": "Motherboard Mic",
+                    "media.class": "Audio/Source"
+                }
+            }),
+        ];
+        let devices = parse_sources_as_devices(&sources);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(
+            devices[0].name,
+            "alsa_input.pci-0000_0c_00.4.analog-stereo"
+        );
+        assert_eq!(devices[0].description, "Motherboard Mic");
+    }
+
+    #[test]
+    fn test_parse_sources_as_devices_empty() {
+        let devices = parse_sources_as_devices(&[]);
+        assert!(devices.is_empty());
     }
 }

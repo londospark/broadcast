@@ -5,7 +5,29 @@ use crate::state::{AppRoute, BroadcastState};
 
 /// Pure function: find the default hardware sink index from a list of sinks,
 /// skipping broadcast filter sinks and virtual sinks.
-pub fn find_default_sink_index(sinks: &[serde_json::Value], filter_sink_name: &str) -> Result<u32> {
+/// If `preferred` is set and found, use it; otherwise fall back to first hardware sink.
+pub fn find_default_sink_index(
+    sinks: &[serde_json::Value],
+    filter_sink_name: &str,
+    preferred: Option<&str>,
+) -> Result<u32> {
+    // If a preferred sink is specified, try to find it first
+    if let Some(preferred_name) = preferred {
+        for sink in sinks {
+            let props = sink.get("properties").and_then(|v| v.as_object());
+            let name = props
+                .and_then(|p| p.get("node.name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if name == preferred_name {
+                if let Some(idx) = sink.get("index").and_then(|v| v.as_u64()) {
+                    return Ok(idx as u32);
+                }
+            }
+        }
+        // Preferred not found — fall through to auto-detect
+    }
+
     for sink in sinks {
         let props = sink.get("properties").and_then(|v| v.as_object());
         let name = props
@@ -39,7 +61,11 @@ pub fn route_app(
     let inputs = backend.list_sink_inputs()?;
     let broadcast_idx = backend.get_sink_index(&state.nodes.output_sink)?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(&sinks, &state.nodes.output_sink)?;
+    let default_idx = find_default_sink_index(
+        &sinks,
+        &state.nodes.output_sink,
+        state.preferred_output_sink.as_deref(),
+    )?;
     let mut routed = 0u32;
 
     let target = match route {
@@ -67,7 +93,11 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
     let inputs = backend.list_sink_inputs()?;
     let broadcast_idx = backend.get_sink_index(&state.nodes.output_sink)?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(&sinks, &state.nodes.output_sink)?;
+    let default_idx = find_default_sink_index(
+        &sinks,
+        &state.nodes.output_sink,
+        state.preferred_output_sink.as_deref(),
+    )?;
 
     for input in &inputs {
         let app_key = if !input.app_binary.is_empty() {
@@ -99,7 +129,11 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
 pub fn bypass_all(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Result<()> {
     let inputs = backend.list_sink_inputs()?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(&sinks, &state.nodes.output_sink)?;
+    let default_idx = find_default_sink_index(
+        &sinks,
+        &state.nodes.output_sink,
+        state.preferred_output_sink.as_deref(),
+    )?;
 
     for input in &inputs {
         let _ = backend.move_sink_input(input.id, default_idx);
@@ -212,7 +246,7 @@ mod tests {
     #[test]
     fn test_find_default_sink_index_basic() {
         let sinks = vec![hw_sink(), filter_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink").unwrap();
+        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
         assert_eq!(idx, 5);
     }
 
@@ -220,21 +254,54 @@ mod tests {
     fn test_find_default_sink_index_skips_filter() {
         // Filter sink listed first; should be skipped
         let sinks = vec![filter_sink(), hw_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink").unwrap();
+        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
         assert_eq!(idx, 5);
     }
 
     #[test]
     fn test_find_default_sink_index_skips_virtual() {
         let sinks = vec![virtual_sink(), filter_sink(), hw_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink").unwrap();
+        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
         assert_eq!(idx, 5);
     }
 
     #[test]
     fn test_find_default_sink_index_no_sinks() {
         let sinks: Vec<serde_json::Value> = vec![];
-        assert!(find_default_sink_index(&sinks, "broadcast_filter_sink").is_err());
+        assert!(find_default_sink_index(&sinks, "broadcast_filter_sink", None).is_err());
+    }
+
+    #[test]
+    fn test_find_default_sink_index_preferred() {
+        let second_hw_sink = json!({
+            "index": 10,
+            "properties": {
+                "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                "media.class": "Audio/Sink"
+            }
+        });
+        let sinks = vec![hw_sink(), filter_sink(), second_hw_sink];
+        // With preferred set, should pick the preferred sink even though it's not first
+        let idx = find_default_sink_index(
+            &sinks,
+            "broadcast_filter_sink",
+            Some("alsa_output.pci-0000_0c_00.4.analog-stereo"),
+        )
+        .unwrap();
+        assert_eq!(idx, 10);
+    }
+
+    #[test]
+    fn test_find_default_sink_index_preferred_not_found_falls_back() {
+        let sinks = vec![hw_sink(), filter_sink()];
+        // Preferred sink doesn't exist — should fall back to first hardware sink
+        let idx = find_default_sink_index(
+            &sinks,
+            "broadcast_filter_sink",
+            Some("nonexistent_sink"),
+        )
+        .unwrap();
+        assert_eq!(idx, 5);
     }
 
     // ── route_app ──────────────────────────────────────────────────────

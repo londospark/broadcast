@@ -14,6 +14,7 @@ pub struct MockBackend {
     pub sink_inputs: RefCell<Vec<SinkInput>>,
     pub sink_indices: RefCell<HashMap<String, u32>>,
     pub sinks: RefCell<Vec<Value>>,
+    pub sources: RefCell<Vec<Value>>,
     pub default_sink_name: RefCell<String>,
     /// Tracks (input_id, sink_id) for each move_sink_input call.
     pub moved_inputs: RefCell<Vec<(u32, u32)>>,
@@ -60,5 +61,9 @@ impl PipeWireBackend for MockBackend {
 
     fn list_sinks(&self) -> Result<Vec<Value>> {
         Ok(self.sinks.borrow().clone())
+    }
+
+    fn list_sources(&self) -> Result<Vec<Value>> {
+        Ok(self.sources.borrow().clone())
     }
 }
