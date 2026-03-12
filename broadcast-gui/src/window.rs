@@ -156,8 +156,7 @@ impl BroadcastWindow {
                 .title("Broadcast")
                 .subtitle(if state.active { "Active" } else { "Off" })
                 .build();
-            let master_icon =
-                gtk::Image::from_icon_name("audio-volume-high-symbolic");
+            let master_icon = gtk::Image::from_icon_name("audio-volume-high-symbolic");
             master_row.add_prefix(&master_icon);
             master_row.add_suffix(&master_switch);
             master_row.set_activatable_widget(Some(&master_switch));
@@ -402,14 +401,12 @@ impl BroadcastWindow {
             None => 0,
         };
 
-        let combo = adw::ComboRow::builder()
+        adw::ComboRow::builder()
             .title(title)
             .subtitle(subtitle)
             .model(&model)
             .selected(selected)
-            .build();
-
-        combo
+            .build()
     }
 
     fn refresh_apps(&self) {

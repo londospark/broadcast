@@ -146,17 +146,11 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
         println!("Default route: {}", state.default_route);
         println!(
             "Output device: {}",
-            state
-                .preferred_output_sink
-                .as_deref()
-                .unwrap_or("(auto)")
+            state.preferred_output_sink.as_deref().unwrap_or("(auto)")
         );
         println!(
             "Input device: {}",
-            state
-                .preferred_input_source
-                .as_deref()
-                .unwrap_or("(auto)")
+            state.preferred_input_source.as_deref().unwrap_or("(auto)")
         );
         if !state.app_routes.is_empty() {
             println!("App routes:");
@@ -263,7 +257,11 @@ fn cmd_devices(backend: &dyn PipeWireBackend) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_device(backend: &dyn PipeWireBackend, device_type: &str, device_name: &str) -> Result<()> {
+fn cmd_set_device(
+    backend: &dyn PipeWireBackend,
+    device_type: &str,
+    device_name: &str,
+) -> Result<()> {
     let mut state = BroadcastState::load()?;
 
     match device_type.to_lowercase().as_str() {
@@ -314,7 +312,10 @@ fn cmd_set_device(backend: &dyn PipeWireBackend, device_type: &str, device_name:
             }
         }
         _ => {
-            anyhow::bail!("Invalid device type '{}'. Use 'output' or 'input'.", device_type);
+            anyhow::bail!(
+                "Invalid device type '{}'. Use 'output' or 'input'.",
+                device_type
+            );
         }
     }
 

@@ -295,12 +295,9 @@ mod tests {
     fn test_find_default_sink_index_preferred_not_found_falls_back() {
         let sinks = vec![hw_sink(), filter_sink()];
         // Preferred sink doesn't exist — should fall back to first hardware sink
-        let idx = find_default_sink_index(
-            &sinks,
-            "broadcast_filter_sink",
-            Some("nonexistent_sink"),
-        )
-        .unwrap();
+        let idx =
+            find_default_sink_index(&sinks, "broadcast_filter_sink", Some("nonexistent_sink"))
+                .unwrap();
         assert_eq!(idx, 5);
     }
 

@@ -547,10 +547,7 @@ mod tests {
         ];
         let devices = parse_sources_as_devices(&sources);
         assert_eq!(devices.len(), 1);
-        assert_eq!(
-            devices[0].name,
-            "alsa_input.pci-0000_0c_00.4.analog-stereo"
-        );
+        assert_eq!(devices[0].name, "alsa_input.pci-0000_0c_00.4.analog-stereo");
         assert_eq!(devices[0].description, "Motherboard Mic");
     }
 
