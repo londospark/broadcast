@@ -1,7 +1,7 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -19,6 +19,7 @@ mod imp {
         pub master_switch: RefCell<Option<gtk::Switch>>,
         pub app_list: RefCell<Option<gtk::ListBox>>,
         pub state: RefCell<BroadcastState>,
+        pub menu_mode: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -44,25 +45,29 @@ glib::wrapper! {
 
 impl BroadcastWindow {
     pub fn new(app: &adw::Application, menu_mode: bool) -> Self {
+        let (width, height) = if menu_mode { (420, 480) } else { (560, 520) };
         let win: Self = glib::Object::builder()
             .property("application", app)
             .property("title", "Broadcast")
-            .property("default-width", 560)
-            .property("default-height", 520)
+            .property("default-width", width)
+            .property("default-height", height)
             .build();
 
+        win.imp().menu_mode.set(menu_mode);
+
         if menu_mode {
-            // Use the Wayland Layer Shell protocol when available so the popup
-            // is a proper layer surface: it won't be tiled or snapped by the
-            // compositor, and focus-loss detection is reliable.
             if gtk4_layer_shell::is_supported() {
                 win.init_layer_shell();
-                win.set_layer(Layer::Top);
-                // OnDemand: the surface gains keyboard focus when the user
-                // clicks into it rather than stealing focus on creation.
+                win.set_layer(Layer::Overlay);
+                win.set_namespace(Some("broadcast-popup"));
+                // Anchor to top-right so the popup drops down near the
+                // broadcast widget in the bar.
+                win.set_anchor(Edge::Top, true);
+                win.set_anchor(Edge::Right, true);
+                win.set_margin(Edge::Top, 48);
+                win.set_margin(Edge::Right, 10);
                 win.set_keyboard_mode(KeyboardMode::OnDemand);
             } else {
-                // Fallback for X11 / compositors without layer-shell support.
                 win.set_decorated(false);
             }
             win.set_resizable(false);
@@ -101,25 +106,40 @@ impl BroadcastWindow {
 
     fn setup_ui(&self) {
         let state = BroadcastState::load().unwrap_or_default();
+        let menu_mode = self.imp().menu_mode.get();
 
-        // Make combo-row dropdown popovers wide enough for full device names
+        // Global CSS: combo dropdown width + popup-mode styling
         let css = gtk::CssProvider::new();
-        css.load_from_data("popover > contents > scrolledwindow { min-width: 500px; }");
+        css.load_from_data(
+            "popover > contents > scrolledwindow { min-width: 500px; }
+             window.popup-mode { background-color: transparent; }
+             window.popup-mode .background {
+                 background-color: rgba(230, 238, 255, 0.94);
+                 border-radius: 14px;
+             }",
+        );
         gtk::style_context_add_provider_for_display(
             &gtk::prelude::WidgetExt::display(self),
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
 
-        // Header bar
-        let header = adw::HeaderBar::new();
+        // Header bar (omitted in menu/popup mode)
+        let header = if menu_mode {
+            self.add_css_class("popup-mode");
+            None
+        } else {
+            Some(adw::HeaderBar::new())
+        };
 
-        // Master switch in header
+        // Master switch in header (or inline in mic row for popup mode)
         let master_switch = gtk::Switch::new();
         master_switch.set_active(state.master);
         master_switch.set_valign(gtk::Align::Center);
         master_switch.set_tooltip_text(Some("Master toggle — enable/disable all filtering"));
-        header.pack_end(&master_switch);
+        if let Some(h) = &header {
+            h.pack_end(&master_switch);
+        }
 
         // Main content
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -145,6 +165,10 @@ impl BroadcastWindow {
         let mic_status = gtk::Label::new(Some(if state.master { "Active" } else { "Bypassed" }));
         mic_status.add_css_class(if state.master { "success" } else { "dim-label" });
         mic_row.add_suffix(&mic_status);
+        if menu_mode {
+            mic_row.add_suffix(&master_switch);
+            mic_row.set_activatable_widget(Some(&master_switch));
+        }
 
         mic_group.add(&mic_row);
         content.append(&mic_group);
@@ -232,7 +256,9 @@ impl BroadcastWindow {
             .build();
 
         let toolbar_view = adw::ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
+        if let Some(h) = &header {
+            toolbar_view.add_top_bar(h);
+        }
         toolbar_view.set_content(Some(&scrolled));
 
         self.set_content(Some(&toolbar_view));
