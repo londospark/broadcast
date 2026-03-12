@@ -77,9 +77,14 @@ fn main() -> Result<()> {
 
 fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
     let mut state = BroadcastState::load()?;
-    state.output_filter = !state.output_filter;
+    let active = !state.master;
+    state.master = active;
+    state.input_filter = active;
+    state.output_filter = active;
 
-    if state.output_filter {
+    filter::set_filter_active(backend, &state, active)?;
+
+    if active {
         routing::apply_routes(backend, &state)?;
     } else {
         routing::bypass_all(backend, &state)?;
@@ -87,8 +92,8 @@ fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
 
     state.save()?;
 
-    let icon = if state.output_filter { "󰍬" } else { "󰍭" };
-    let label = if state.output_filter { "ON" } else { "OFF" };
+    let icon = if active { "󰍬" } else { "󰍭" };
+    let label = if active { "ON" } else { "OFF" };
     eprintln!("{icon} Broadcast {label}");
     Ok(())
 }
@@ -96,11 +101,15 @@ fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
 fn cmd_set(backend: &dyn PipeWireBackend, active: bool) -> Result<()> {
     let mut state = BroadcastState::load()?;
     state.master = active;
+    state.input_filter = active;
+    state.output_filter = active;
 
     filter::set_filter_active(backend, &state, active)?;
 
     if active {
         routing::apply_routes(backend, &state)?;
+    } else {
+        routing::bypass_all(backend, &state)?;
     }
 
     state.save()?;
@@ -128,7 +137,7 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
         });
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else if ironbar {
-        if state.output_filter && loaded {
+        if state.master && loaded {
             println!("󰍬 Broadcast");
         } else if loaded {
             println!("󰍭");

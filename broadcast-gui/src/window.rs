@@ -304,9 +304,13 @@ impl BroadcastWindow {
             let backend = RealBackend;
             let mut state = win.imp().state.borrow_mut();
             state.master = active;
+            state.input_filter = active;
+            state.output_filter = active;
             let _ = filter::set_filter_active(&backend, &state, active);
             if active {
                 let _ = routing::apply_routes(&backend, &state);
+            } else {
+                let _ = routing::bypass_all(&backend, &state);
             }
             let _ = state.save();
 
