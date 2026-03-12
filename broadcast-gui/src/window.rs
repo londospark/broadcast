@@ -55,7 +55,7 @@ impl BroadcastWindow {
             // Use the Wayland Layer Shell protocol when available so the popup
             // is a proper layer surface: it won't be tiled or snapped by the
             // compositor, and focus-loss detection is reliable.
-            if gtk4_layer_shell::is_layer_shell_available() {
+            if gtk4_layer_shell::is_supported() {
                 win.init_layer_shell();
                 win.set_layer(Layer::Top);
                 // OnDemand: the surface gains keyboard focus when the user
@@ -106,7 +106,7 @@ impl BroadcastWindow {
         let css = gtk::CssProvider::new();
         css.load_from_data("popover > contents > scrolledwindow { min-width: 500px; }");
         gtk::style_context_add_provider_for_display(
-            &self.display(),
+            &gtk::prelude::WidgetExt::display(self),
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
