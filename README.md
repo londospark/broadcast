@@ -26,6 +26,7 @@ _Coming soon_
 - **DeepFilterNet LADSPA plugin** — provides the AI noise suppression
   - Arch/CachyOS: `paru -S libdeep_filter_ladspa-git`
 - **GTK4 + Libadwaita** (for the GUI)
+- **gtk4-layer-shell** (for the `--menu` popup mode — already present on any system running Ironbar)
 - PipeWire filter chain configs (see [examples/](examples/))
 
 ## Installation
@@ -117,7 +118,8 @@ broadcast-ctl apply               # Re-apply saved routing preferences
 ### GUI
 
 ```sh
-broadcast-gui
+broadcast-gui           # open as a normal application window
+broadcast-gui --menu    # open as a popup/flyout (no decorations, closes on focus loss)
 ```
 
 ### Desktop integration
@@ -132,8 +134,11 @@ mode = "poll"
 cmd = "broadcast-ctl status --ironbar"
 interval = 2000
 on_click_left = "broadcast-ctl toggle"
-on_click_right = "broadcast-gui"
+on_click_right = "broadcast-gui --menu"
 ```
+
+Passing `--menu` opens the GUI as an undecorated popup that closes automatically when
+it loses focus, giving a flyout-style experience from the bar.
 
 ## Configuration
 

@@ -1,7 +1,9 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use broadcast_core::backend::RealBackend;
 use broadcast_core::state::{AppRoute, BroadcastState};
@@ -36,17 +38,49 @@ mod imp {
 glib::wrapper! {
     pub struct BroadcastWindow(ObjectSubclass<imp::BroadcastWindow>)
         @extends adw::ApplicationWindow, gtk::ApplicationWindow, gtk::Window, gtk::Widget,
-        @implements gio::ActionGroup, gio::ActionMap;
+        @implements gio::ActionGroup, gio::ActionMap, gtk::Accessible, gtk::Buildable,
+                    gtk::ConstraintTarget, gtk::Native, gtk::Root, gtk::ShortcutManager;
 }
 
 impl BroadcastWindow {
-    pub fn new(app: &adw::Application) -> Self {
+    pub fn new(app: &adw::Application, menu_mode: bool) -> Self {
         let win: Self = glib::Object::builder()
             .property("application", app)
             .property("title", "Broadcast")
             .property("default-width", 560)
             .property("default-height", 520)
             .build();
+
+        if menu_mode {
+            // Use the Wayland Layer Shell protocol when available so the popup
+            // is a proper layer surface: it won't be tiled or snapped by the
+            // compositor, and focus-loss detection is reliable.
+            if gtk4_layer_shell::is_supported() {
+                win.init_layer_shell();
+                win.set_layer(Layer::Top);
+                // OnDemand: the surface gains keyboard focus when the user
+                // clicks into it rather than stealing focus on creation.
+                win.set_keyboard_mode(KeyboardMode::OnDemand);
+            } else {
+                // Fallback for X11 / compositors without layer-shell support.
+                win.set_decorated(false);
+            }
+            win.set_resizable(false);
+
+            // Close the popup when it loses focus, but only after it has been
+            // active at least once.  Without the guard the window can flash and
+            // disappear immediately on wlroots compositors (Hyprland, niri, …)
+            // because is_active toggles during the initial presentation before
+            // focus has transferred from the bar surface.
+            let was_active = Rc::new(Cell::new(false));
+            win.connect_is_active_notify(move |w| {
+                if w.is_active() {
+                    was_active.set(true);
+                } else if was_active.get() {
+                    w.close();
+                }
+            });
+        }
 
         win.setup_ui();
         win.refresh_apps();
@@ -72,7 +106,7 @@ impl BroadcastWindow {
         let css = gtk::CssProvider::new();
         css.load_from_data("popover > contents > scrolledwindow { min-width: 500px; }");
         gtk::style_context_add_provider_for_display(
-            &self.display(),
+            &gtk::prelude::WidgetExt::display(self),
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
