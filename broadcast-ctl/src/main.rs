@@ -7,7 +7,8 @@ use broadcast_core::{filter, routing, state::BroadcastState};
 #[derive(Parser)]
 #[command(
     name = "broadcast-ctl",
-    about = "AI noise suppression control for PipeWire"
+    about = "AI noise suppression control for PipeWire",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
