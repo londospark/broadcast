@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell
       - uses: actions/checkout@v4
       - run: cargo test
 
@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell
       - uses: actions/checkout@v4
       - name: Build release binaries
         run: cargo build --release
@@ -54,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev pkg-config
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deb
@@ -80,7 +80,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          dnf install -y gcc gtk4-devel libadwaita-devel pkg-config rust cargo git
+          dnf install -y gcc gtk4-devel libadwaita-devel gtk4-layer-shell-devel pkg-config rust cargo git
       - uses: actions/checkout@v4
       - name: Install cargo-generate-rpm
         run: cargo install cargo-generate-rpm
