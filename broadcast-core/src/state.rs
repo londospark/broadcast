@@ -55,9 +55,10 @@ impl Default for NodeNames {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BroadcastState {
-    pub master: bool,
-    pub input_filter: bool,
-    pub output_filter: bool,
+    /// Global enable/disable for all filtering.
+    /// Alias "master" for backward-compat with older state files.
+    #[serde(alias = "master")]
+    pub active: bool,
     pub default_route: AppRoute,
     #[serde(default)]
     pub app_routes: HashMap<String, AppRoute>,
@@ -74,9 +75,7 @@ pub struct BroadcastState {
 impl Default for BroadcastState {
     fn default() -> Self {
         Self {
-            master: true,
-            input_filter: true,
-            output_filter: true,
+            active: true,
             default_route: AppRoute::Direct,
             app_routes: HashMap::new(),
             nodes: NodeNames::default(),
@@ -191,9 +190,7 @@ mod tests {
     #[test]
     fn test_default_state() {
         let s = BroadcastState::default();
-        assert!(s.master);
-        assert!(s.input_filter);
-        assert!(s.output_filter);
+        assert!(s.active);
         assert_eq!(s.default_route, AppRoute::Direct);
         assert!(s.app_routes.is_empty());
     }
@@ -244,7 +241,7 @@ mod tests {
     #[test]
     fn test_serde_roundtrip() {
         let mut s = BroadcastState {
-            master: false,
+            active: false,
             ..Default::default()
         };
         s.set_app_route("brave", AppRoute::Filtered);
@@ -252,7 +249,7 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let s2: BroadcastState = serde_json::from_str(&json).unwrap();
 
-        assert!(!s2.master);
+        assert!(!s2.active);
         assert_eq!(s2.route_for("brave"), AppRoute::Filtered);
         assert_eq!(s2.nodes.input_capture, s.nodes.input_capture);
     }
@@ -279,14 +276,22 @@ mod tests {
     #[test]
     fn test_serde_missing_optional_fields() {
         // Minimal JSON without nodes, app_routes, or preferred devices — serde defaults should kick in
-        let json = r#"{"master":true,"input_filter":true,"output_filter":false,"default_route":"filtered"}"#;
+        let json = r#"{"active":true,"default_route":"filtered"}"#;
         let s: BroadcastState = serde_json::from_str(json).unwrap();
         assert!(s.app_routes.is_empty());
         assert_eq!(s.nodes.output_sink, "broadcast_filter_sink");
         assert_eq!(s.default_route, AppRoute::Filtered);
-        assert!(!s.output_filter);
         assert!(s.preferred_output_sink.is_none());
         assert!(s.preferred_input_source.is_none());
+    }
+
+    #[test]
+    fn test_serde_backward_compat_old_state_file() {
+        // Old state files used "master", "input_filter", "output_filter"
+        let json = r#"{"master":false,"input_filter":true,"output_filter":false,"default_route":"direct"}"#;
+        let s: BroadcastState = serde_json::from_str(json).unwrap();
+        assert!(!s.active); // "master" alias maps to "active"
+        assert_eq!(s.default_route, AppRoute::Direct);
     }
 
     #[test]
@@ -313,14 +318,14 @@ mod tests {
         let path = dir.join("config.json");
 
         let mut s = BroadcastState {
-            master: false,
+            active: false,
             ..Default::default()
         };
         s.set_app_route("brave", AppRoute::Filtered);
         s.save_to(&path).unwrap();
 
         let loaded = BroadcastState::load_from(&path).unwrap();
-        assert!(!loaded.master);
+        assert!(!loaded.active);
         assert_eq!(loaded.route_for("brave"), AppRoute::Filtered);
 
         std::fs::remove_dir_all(&dir).ok();

@@ -105,7 +105,9 @@ broadcast-ctl status
 ### CLI
 
 ```sh
-broadcast-ctl toggle              # Toggle output noise suppression on/off
+broadcast-ctl toggle              # Toggle noise suppression on/off
+broadcast-ctl on                  # Enable filtering
+broadcast-ctl off                 # Disable filtering (passthrough)
 broadcast-ctl status              # Show current state
 broadcast-ctl status --ironbar    # Compact status for bar widgets
 broadcast-ctl status --json       # JSON output
@@ -113,18 +115,28 @@ broadcast-ctl apps                # List running audio streams
 broadcast-ctl route brave filtered  # Route Brave through the filter
 broadcast-ctl route spotify direct  # Keep Spotify unfiltered
 broadcast-ctl apply               # Re-apply saved routing preferences
+broadcast-ctl devices             # List available audio devices
+broadcast-ctl set-device output <name>  # Set preferred output device
+broadcast-ctl set-device input <name>   # Set preferred input device
+broadcast-ctl --version           # Show version
 ```
 
 ### GUI
 
 ```sh
-broadcast-gui           # open as a normal application window
-broadcast-gui --menu    # open as a popup/flyout (no decorations, closes on focus loss)
+broadcast-gui                                   # normal application window
+broadcast-gui --menu                            # popup/flyout (no decorations, closes on focus loss)
+broadcast-gui --menu --margin-top 48 --margin-right 10  # custom popup position
 ```
 
 ### Desktop integration
 
-Broadcast works well with status bars. Example for [Ironbar](https://github.com/JakeStanger/ironbar):
+Broadcast works well with Wayland status bars. The `--menu` flag opens the GUI as
+an undecorated popup that closes automatically when it loses focus, giving a
+flyout-style experience from the bar. You can tune its position with
+`--margin-top` and `--margin-right` (defaults: 48 and 10).
+
+#### [Ironbar](https://github.com/JakeStanger/ironbar)
 
 ```toml
 [[end]]
@@ -134,18 +146,72 @@ mode = "poll"
 cmd = "broadcast-ctl status --ironbar"
 interval = 2000
 on_click_left = "broadcast-ctl toggle"
-on_click_right = "broadcast-gui --menu"
+on_click_right = "broadcast-gui --menu --margin-top 48 --margin-right 10"
 ```
 
-Passing `--menu` opens the GUI as an undecorated popup that closes automatically when
-it loses focus, giving a flyout-style experience from the bar.
+#### [Waybar](https://github.com/Alexays/Waybar)
+
+```jsonc
+// In your waybar config
+"custom/broadcast": {
+    "exec": "broadcast-ctl status --ironbar",
+    "interval": 2,
+    "on-click": "broadcast-ctl toggle",
+    "on-click-right": "broadcast-gui --menu --margin-top 38 --margin-right 10",
+    "tooltip": false
+}
+```
+
+Add `"custom/broadcast"` to your `modules-right` (or whichever side you prefer).
+
+#### [Yambar](https://codeberg.org/dnkl/yambar)
+
+```yaml
+- script:
+    path: /bin/sh
+    args:
+      - -c
+      - broadcast-ctl status --ironbar
+    poll-interval: 2000
+    content:
+      string:
+        text: "{broadcast-ctl status --ironbar}"
+        on-click:
+          left: broadcast-ctl toggle
+          right: broadcast-gui --menu --margin-top 38 --margin-right 10
+```
+
+#### [AGS](https://github.com/Aylur/ags) / [Eww](https://github.com/elkowar/eww)
+
+Both AGS and Eww can poll `broadcast-ctl status --json` for structured data and
+`broadcast-ctl toggle` for click actions. Example Eww widget:
+
+```yuck
+(deflisten broadcast-status :initial "{}"
+  `watch -n2 -t broadcast-ctl status --json`)
+
+(defwidget broadcast []
+  (button :onclick "broadcast-ctl toggle"
+          :onrightclick "broadcast-gui --menu"
+    (label :text {broadcast-status.active ? "󰍬" : "󰍭"})))
+```
+
+#### Generic (any bar with script support)
+
+Any bar that can poll a command and trigger click actions works. You need:
+
+| Function | Command |
+|----------|---------|
+| Status text | `broadcast-ctl status --ironbar` |
+| JSON status | `broadcast-ctl status --json` |
+| Toggle | `broadcast-ctl toggle` |
+| Popup GUI | `broadcast-gui --menu` |
 
 ## Configuration
 
 State is persisted at `~/.local/state/broadcast/config.json`. You can configure:
 
-- **`master`** — global enable/disable
-- **`output_filter`** — whether output routing is active
+- **`active`** — global enable/disable for all filtering
 - **`default_route`** — `"filtered"` or `"direct"` for new audio streams
 - **`app_routes`** — per-app routing preferences (persisted across restarts)
 - **`nodes`** — PipeWire node names for your filter chains:
@@ -157,6 +223,7 @@ State is persisted at `~/.local/state/broadcast/config.json`. You can configure:
     }
   }
   ```
+- **`preferred_output_sink`** / **`preferred_input_source`** — preferred device by PipeWire node name (`null` = auto-detect)
 
 ## How it works
 

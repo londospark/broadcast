@@ -77,10 +77,8 @@ fn main() -> Result<()> {
 
 fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
     let mut state = BroadcastState::load()?;
-    let active = !state.master;
-    state.master = active;
-    state.input_filter = active;
-    state.output_filter = active;
+    let active = !state.active;
+    state.active = active;
 
     filter::set_filter_active(backend, &state, active)?;
 
@@ -100,9 +98,7 @@ fn cmd_toggle(backend: &dyn PipeWireBackend) -> Result<()> {
 
 fn cmd_set(backend: &dyn PipeWireBackend, active: bool) -> Result<()> {
     let mut state = BroadcastState::load()?;
-    state.master = active;
-    state.input_filter = active;
-    state.output_filter = active;
+    state.active = active;
 
     filter::set_filter_active(backend, &state, active)?;
 
@@ -126,9 +122,7 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
 
     if json {
         let status = serde_json::json!({
-            "master": state.master,
-            "input_filter": state.input_filter,
-            "output_filter": state.output_filter,
+            "active": state.active,
             "filters_loaded": loaded,
             "default_route": state.default_route,
             "app_routes": state.app_routes,
@@ -137,7 +131,7 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
         });
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else if ironbar {
-        if state.master && loaded {
+        if state.active && loaded {
             println!("󰍬 Broadcast");
         } else if loaded {
             println!("󰍭");
@@ -145,18 +139,10 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
             println!("󰍮");
         }
     } else {
-        let status = if state.master { "ON" } else { "OFF" };
+        let status = if state.active { "ON" } else { "OFF" };
         let filter_status = if loaded { "loaded" } else { "not loaded" };
         println!("Broadcast: {status}");
         println!("Filters: {filter_status}");
-        println!(
-            "Input filter: {}",
-            if state.input_filter { "on" } else { "off" }
-        );
-        println!(
-            "Output filter: {}",
-            if state.output_filter { "on" } else { "off" }
-        );
         println!("Default route: {}", state.default_route);
         println!(
             "Output device: {}",
@@ -186,8 +172,7 @@ fn cmd_route(backend: &dyn PipeWireBackend, app: &str, mode: &str) -> Result<()>
     let route: broadcast_core::state::AppRoute = mode.parse()?;
     let mut state = BroadcastState::load()?;
 
-    // Apply immediately if master is on
-    if state.master {
+    if state.active {
         let moved = routing::route_app(backend, &state, app, route)?;
         eprintln!("Routed {moved} stream(s) for '{app}' → {route}");
     }
@@ -222,7 +207,7 @@ fn cmd_apps(backend: &dyn PipeWireBackend) -> Result<()> {
 
 fn cmd_apply(backend: &dyn PipeWireBackend) -> Result<()> {
     let state = BroadcastState::load()?;
-    if !state.master {
+    if !state.active {
         eprintln!("Broadcast is OFF — not applying routes");
         return Ok(());
     }
@@ -335,8 +320,7 @@ fn cmd_set_device(backend: &dyn PipeWireBackend, device_type: &str, device_name:
 
     state.save()?;
 
-    // Re-apply routes if master is on so the new device takes effect immediately
-    if state.master {
+    if state.active {
         routing::apply_routes(backend, &state)?;
         eprintln!("Routes re-applied with new device");
     }

@@ -134,7 +134,7 @@ impl BroadcastWindow {
 
         // Master switch in header (or inline in mic row for popup mode)
         let master_switch = gtk::Switch::new();
-        master_switch.set_active(state.master);
+        master_switch.set_active(state.active);
         master_switch.set_valign(gtk::Align::Center);
         master_switch.set_tooltip_text(Some("Master toggle — enable/disable all filtering"));
         if let Some(h) = &header {
@@ -154,7 +154,7 @@ impl BroadcastWindow {
             master_group.set_margin_bottom(18);
             let master_row = adw::ActionRow::builder()
                 .title("Broadcast")
-                .subtitle(if state.master { "Active" } else { "Off" })
+                .subtitle(if state.active { "Active" } else { "Off" })
                 .build();
             let master_icon =
                 gtk::Image::from_icon_name("audio-volume-high-symbolic");
@@ -182,8 +182,8 @@ impl BroadcastWindow {
         let mic_icon = gtk::Image::from_icon_name("audio-input-microphone-symbolic");
         mic_row.add_prefix(&mic_icon);
 
-        let mic_status = gtk::Label::new(Some(if state.master { "Active" } else { "Bypassed" }));
-        mic_status.add_css_class(if state.master { "success" } else { "dim-label" });
+        let mic_status = gtk::Label::new(Some(if state.active { "Active" } else { "Bypassed" }));
+        mic_status.add_css_class(if state.active { "success" } else { "dim-label" });
         mic_row.add_suffix(&mic_status);
 
         let output_row = adw::ActionRow::builder()
@@ -194,8 +194,8 @@ impl BroadcastWindow {
         output_row.add_prefix(&output_icon);
 
         let output_status =
-            gtk::Label::new(Some(if state.master { "Filtered" } else { "Bypassed" }));
-        output_status.add_css_class(if state.master { "success" } else { "dim-label" });
+            gtk::Label::new(Some(if state.active { "Filtered" } else { "Bypassed" }));
+        output_status.add_css_class(if state.active { "success" } else { "dim-label" });
         output_row.add_suffix(&output_status);
 
         status_group.add(&mic_row);
@@ -303,9 +303,7 @@ impl BroadcastWindow {
         master_switch.connect_state_set(move |_switch, active| {
             let backend = RealBackend;
             let mut state = win.imp().state.borrow_mut();
-            state.master = active;
-            state.input_filter = active;
-            state.output_filter = active;
+            state.active = active;
             let _ = filter::set_filter_active(&backend, &state, active);
             if active {
                 let _ = routing::apply_routes(&backend, &state);
@@ -360,7 +358,7 @@ impl BroadcastWindow {
                 }
             }
             let _ = state.save();
-            if state.master {
+            if state.active {
                 let backend = RealBackend;
                 let _ = routing::apply_routes(&backend, &state);
             }
@@ -449,13 +447,13 @@ impl BroadcastWindow {
             let binary = app.binary.clone();
             row.connect_route_changed(move |route| {
                 let backend = RealBackend;
-                let master = {
+                let is_active = {
                     let mut state = win.imp().state.borrow_mut();
                     state.set_app_route(&binary, route);
                     let _ = state.save();
-                    state.master
+                    state.active
                 };
-                if master {
+                if is_active {
                     let state = win.imp().state.borrow();
                     let _ = routing::route_app(&backend, &state, &binary, route);
                 }
