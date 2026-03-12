@@ -72,7 +72,7 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "broadcast-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "broadcast-ctl"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "broadcast-core",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "broadcast-gui"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "broadcast-core",
