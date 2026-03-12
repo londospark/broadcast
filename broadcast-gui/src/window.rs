@@ -112,8 +112,7 @@ impl BroadcastWindow {
         let css = gtk::CssProvider::new();
         css.load_from_data(
             "popover > contents > scrolledwindow { min-width: 500px; }
-             window.popup-mode { background-color: transparent; }
-             window.popup-mode .background {
+             window.popup-mode.background {
                  background-color: rgba(230, 238, 255, 0.94);
                  border-radius: 14px;
              }",
@@ -148,6 +147,26 @@ impl BroadcastWindow {
         content.set_margin_start(12);
         content.set_margin_end(12);
 
+        // In popup mode, add a prominent master toggle at the top
+        let master_row_opt = if menu_mode {
+            let master_group = adw::PreferencesGroup::new();
+            master_group.set_margin_bottom(18);
+            let master_row = adw::ActionRow::builder()
+                .title("Broadcast")
+                .subtitle(if state.master { "Active" } else { "Off" })
+                .build();
+            let master_icon =
+                gtk::Image::from_icon_name("audio-volume-high-symbolic");
+            master_row.add_prefix(&master_icon);
+            master_row.add_suffix(&master_switch);
+            master_row.set_activatable_widget(Some(&master_switch));
+            master_group.add(&master_row);
+            content.append(&master_group);
+            Some(master_row)
+        } else {
+            None
+        };
+
         // Mic section
         let mic_group = adw::PreferencesGroup::builder()
             .title("Microphone Input")
@@ -165,10 +184,6 @@ impl BroadcastWindow {
         let mic_status = gtk::Label::new(Some(if state.master { "Active" } else { "Bypassed" }));
         mic_status.add_css_class(if state.master { "success" } else { "dim-label" });
         mic_row.add_suffix(&mic_status);
-        if menu_mode {
-            mic_row.add_suffix(&master_switch);
-            mic_row.set_activatable_widget(Some(&master_switch));
-        }
 
         mic_group.add(&mic_row);
         content.append(&mic_group);
@@ -288,6 +303,9 @@ impl BroadcastWindow {
             } else {
                 mic_status.remove_css_class("success");
                 mic_status.add_css_class("dim-label");
+            }
+            if let Some(row) = &master_row_opt {
+                row.set_subtitle(if active { "Active" } else { "Off" });
             }
 
             glib::Propagation::Proceed
