@@ -44,7 +44,10 @@ glib::wrapper! {
 }
 
 impl BroadcastWindow {
-    pub fn new(app: &adw::Application, menu_mode: bool) -> Self {
+    /// Create a new window. Pass `Some((margin_top, margin_right))` for popup
+    /// mode anchored to the top-right of the screen, or `None` for a regular window.
+    pub fn new(app: &adw::Application, popup: Option<(i32, i32)>) -> Self {
+        let menu_mode = popup.is_some();
         let (width, height) = if menu_mode { (420, 480) } else { (560, 520) };
         let win: Self = glib::Object::builder()
             .property("application", app)
@@ -55,17 +58,15 @@ impl BroadcastWindow {
 
         win.imp().menu_mode.set(menu_mode);
 
-        if menu_mode {
+        if let Some((margin_top, margin_right)) = popup {
             if gtk4_layer_shell::is_supported() {
                 win.init_layer_shell();
                 win.set_layer(Layer::Overlay);
                 win.set_namespace(Some("broadcast-popup"));
-                // Anchor to top-right so the popup drops down near the
-                // broadcast widget in the bar.
                 win.set_anchor(Edge::Top, true);
                 win.set_anchor(Edge::Right, true);
-                win.set_margin(Edge::Top, 48);
-                win.set_margin(Edge::Right, 10);
+                win.set_margin(Edge::Top, margin_top);
+                win.set_margin(Edge::Right, margin_right);
                 win.set_keyboard_mode(KeyboardMode::OnDemand);
             } else {
                 win.set_decorated(false);
@@ -167,16 +168,16 @@ impl BroadcastWindow {
             None
         };
 
-        // Mic section
-        let mic_group = adw::PreferencesGroup::builder()
-            .title("Microphone Input")
-            .description("Real mic → DeepFilterNet → Clean Mic")
+        // Status section
+        let status_group = adw::PreferencesGroup::builder()
+            .title("Filter Status")
+            .description("Noise suppression for mic input and app output")
             .build();
-        mic_group.set_margin_bottom(18);
+        status_group.set_margin_bottom(18);
 
         let mic_row = adw::ActionRow::builder()
             .title("Clean Mic")
-            .subtitle("Noise suppression on microphone")
+            .subtitle("Microphone noise suppression")
             .build();
         let mic_icon = gtk::Image::from_icon_name("audio-input-microphone-symbolic");
         mic_row.add_prefix(&mic_icon);
@@ -185,8 +186,21 @@ impl BroadcastWindow {
         mic_status.add_css_class(if state.master { "success" } else { "dim-label" });
         mic_row.add_suffix(&mic_status);
 
-        mic_group.add(&mic_row);
-        content.append(&mic_group);
+        let output_row = adw::ActionRow::builder()
+            .title("App Output")
+            .subtitle("Per-app output filtering")
+            .build();
+        let output_icon = gtk::Image::from_icon_name("audio-speakers-symbolic");
+        output_row.add_prefix(&output_icon);
+
+        let output_status =
+            gtk::Label::new(Some(if state.master { "Filtered" } else { "Bypassed" }));
+        output_status.add_css_class(if state.master { "success" } else { "dim-label" });
+        output_row.add_suffix(&output_status);
+
+        status_group.add(&mic_row);
+        status_group.add(&output_row);
+        content.append(&status_group);
 
         // Device selection section
         let device_group = adw::PreferencesGroup::builder()
@@ -297,12 +311,15 @@ impl BroadcastWindow {
             let _ = state.save();
 
             mic_status.set_text(if active { "Active" } else { "Bypassed" });
-            if active {
-                mic_status.remove_css_class("dim-label");
-                mic_status.add_css_class("success");
-            } else {
-                mic_status.remove_css_class("success");
-                mic_status.add_css_class("dim-label");
+            output_status.set_text(if active { "Filtered" } else { "Bypassed" });
+            for label in [&mic_status, &output_status] {
+                if active {
+                    label.remove_css_class("dim-label");
+                    label.add_css_class("success");
+                } else {
+                    label.remove_css_class("success");
+                    label.add_css_class("dim-label");
+                }
             }
             if let Some(row) = &master_row_opt {
                 row.set_subtitle(if active { "Active" } else { "Off" });
