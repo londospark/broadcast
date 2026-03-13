@@ -23,6 +23,8 @@ pub trait PipeWireBackend {
     fn list_sinks(&self) -> Result<Vec<serde_json::Value>>;
     /// List all sources as JSON (pactl list sources).
     fn list_sources(&self) -> Result<Vec<serde_json::Value>>;
+    /// Ensure a sink-input is unmuted and at full volume.
+    fn ensure_sink_input_unmuted(&self, input_id: u32) -> Result<()>;
 }
 
 /// Real implementation that shells out to pw-dump, pactl, pw-cli, wpctl.
@@ -110,5 +112,18 @@ impl PipeWireBackend for RealBackend {
         let sources: Vec<serde_json::Value> =
             serde_json::from_slice(&output.stdout).unwrap_or_default();
         Ok(sources)
+    }
+
+    fn ensure_sink_input_unmuted(&self, input_id: u32) -> Result<()> {
+        let id_str = input_id.to_string();
+        Command::new("pactl")
+            .args(["set-sink-input-mute", &id_str, "0"])
+            .status()
+            .context("Failed to unmute sink-input")?;
+        Command::new("pactl")
+            .args(["set-sink-input-volume", &id_str, "100%"])
+            .status()
+            .context("Failed to set sink-input volume")?;
+        Ok(())
     }
 }

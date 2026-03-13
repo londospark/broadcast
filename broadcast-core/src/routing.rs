@@ -103,8 +103,10 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
     for input in &inputs {
         // The filter chain's playback node must always target the preferred
         // hardware sink — never route it back into the filter (loop).
+        // Also ensure it's unmuted (WirePlumber stream-restore may mute it).
         if input.node_name == state.nodes.output_playback {
             let _ = backend.move_sink_input(input.id, default_idx);
+            let _ = backend.ensure_sink_input_unmuted(input.id);
             continue;
         }
 
@@ -411,6 +413,10 @@ mod tests {
         // filter output → hw sink (5), brave → filter sink (8)
         assert_eq!(moved[0], (43, 5));
         assert_eq!(moved[1], (100, 8));
+        // filter output should be unmuted
+        let unmuted = backend.unmuted_inputs.borrow();
+        assert_eq!(unmuted.len(), 1);
+        assert_eq!(unmuted[0], 43);
     }
 
     #[test]

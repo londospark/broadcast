@@ -20,6 +20,8 @@ pub struct MockBackend {
     pub moved_inputs: RefCell<Vec<(u32, u32)>>,
     /// Tracks (node_id, param_type, param_value) for each set_param call.
     pub set_params: RefCell<Vec<(u64, String, String)>>,
+    /// Tracks input_ids that were unmuted.
+    pub unmuted_inputs: RefCell<Vec<u32>>,
 }
 
 impl MockBackend {
@@ -65,5 +67,10 @@ impl PipeWireBackend for MockBackend {
 
     fn list_sources(&self) -> Result<Vec<Value>> {
         Ok(self.sources.borrow().clone())
+    }
+
+    fn ensure_sink_input_unmuted(&self, input_id: u32) -> Result<()> {
+        self.unmuted_inputs.borrow_mut().push(input_id);
+        Ok(())
     }
 }
