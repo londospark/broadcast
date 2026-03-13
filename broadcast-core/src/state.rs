@@ -42,6 +42,13 @@ pub struct NodeNames {
     pub input_capture: String,
     /// The capture node of the output (speaker) filter chain (the virtual sink)
     pub output_sink: String,
+    /// The playback node of the output filter chain (connects to real hardware)
+    #[serde(default = "default_output_playback")]
+    pub output_playback: String,
+}
+
+fn default_output_playback() -> String {
+    "broadcast_filter_output".into()
 }
 
 impl Default for NodeNames {
@@ -49,6 +56,7 @@ impl Default for NodeNames {
         Self {
             input_capture: "capture.deepfilter_mic".into(),
             output_sink: "broadcast_filter_sink".into(),
+            output_playback: default_output_playback(),
         }
     }
 }
@@ -200,6 +208,7 @@ mod tests {
         let n = NodeNames::default();
         assert_eq!(n.input_capture, "capture.deepfilter_mic");
         assert_eq!(n.output_sink, "broadcast_filter_sink");
+        assert_eq!(n.output_playback, "broadcast_filter_output");
     }
 
     // ── route_for / set_app_route ──────────────────────────────────────

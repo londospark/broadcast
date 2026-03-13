@@ -78,12 +78,21 @@ impl BroadcastWindow {
             // disappear immediately on wlroots compositors (Hyprland, niri, …)
             // because is_active toggles during the initial presentation before
             // focus has transferred from the bar surface.
+            //
+            // We also defer the close by 250 ms and re-check, because opening a
+            // ComboRow dropdown popover on a layer-shell surface can cause a
+            // transient focus loss that should not dismiss the window.
             let was_active = Rc::new(Cell::new(false));
             win.connect_is_active_notify(move |w| {
                 if w.is_active() {
                     was_active.set(true);
                 } else if was_active.get() {
-                    w.close();
+                    let w = w.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                        if !w.is_active() {
+                            w.close();
+                        }
+                    });
                 }
             });
         }

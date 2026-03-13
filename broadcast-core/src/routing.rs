@@ -89,6 +89,7 @@ pub fn route_app(
 }
 
 /// Route all apps according to saved preferences.
+/// The filter chain's own output is always routed to the preferred hardware sink.
 pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Result<()> {
     let inputs = backend.list_sink_inputs()?;
     let broadcast_idx = backend.get_sink_index(&state.nodes.output_sink)?;
@@ -100,6 +101,13 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
     )?;
 
     for input in &inputs {
+        // The filter chain's playback node must always target the preferred
+        // hardware sink — never route it back into the filter (loop).
+        if input.node_name == state.nodes.output_playback {
+            let _ = backend.move_sink_input(input.id, default_idx);
+            continue;
+        }
+
         let app_key = if !input.app_binary.is_empty() {
             input.app_binary.to_lowercase()
         } else {
@@ -148,6 +156,11 @@ pub fn list_apps(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Resul
 
     let mut apps = Vec::new();
     for input in &inputs {
+        // Skip the filter chain's own playback node — it's not a user app
+        if input.node_name == state.nodes.output_playback {
+            continue;
+        }
+
         let is_filtered = broadcast_idx
             .map(|idx| input.sink_name == idx.to_string())
             .unwrap_or(false);
@@ -224,6 +237,18 @@ mod tests {
             client_name: client.to_string(),
             app_binary: binary.to_string(),
             media_name: media.to_string(),
+            node_name: String::new(),
+        }
+    }
+
+    fn make_filter_output(id: u32, sink: u32) -> SinkInput {
+        SinkInput {
+            id,
+            sink_name: sink.to_string(),
+            client_name: String::new(),
+            app_binary: String::new(),
+            media_name: "Broadcast Filter".to_string(),
+            node_name: "broadcast_filter_output".to_string(),
         }
     }
 
@@ -365,6 +390,86 @@ mod tests {
         // brave → filter sink (8), spotify → hw sink (5)
         assert_eq!(moved[0], (100, 8));
         assert_eq!(moved[1], (101, 5));
+    }
+
+    // ── filter chain output routing ────────────────────────────────────
+
+    #[test]
+    fn test_apply_routes_filter_output_goes_to_hw_sink() {
+        let inputs = vec![
+            make_filter_output(43, 12), // filter output currently on wrong sink
+            make_input(100, 8, "brave", "Brave Browser", "Playback"),
+        ];
+        let backend = backend_with_sinks(inputs);
+        let mut state = default_state();
+        state.set_app_route("brave", AppRoute::Filtered);
+
+        apply_routes(&backend, &state).unwrap();
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(moved.len(), 2);
+        // filter output → hw sink (5), brave → filter sink (8)
+        assert_eq!(moved[0], (43, 5));
+        assert_eq!(moved[1], (100, 8));
+    }
+
+    #[test]
+    fn test_apply_routes_filter_output_never_loops_to_filter_sink() {
+        // Even when default_route is Filtered, the filter chain output
+        // must go to the hardware sink, not back into the filter.
+        let inputs = vec![make_filter_output(43, 8)];
+        let backend = backend_with_sinks(inputs);
+        let mut state = default_state();
+        state.default_route = AppRoute::Filtered;
+
+        apply_routes(&backend, &state).unwrap();
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0], (43, 5)); // hw sink, NOT filter sink
+    }
+
+    #[test]
+    fn test_apply_routes_filter_output_uses_preferred_sink() {
+        let second_hw = json!({
+            "index": 10,
+            "properties": {
+                "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                "media.class": "Audio/Sink"
+            }
+        });
+        let inputs = vec![make_filter_output(43, 5)];
+        let b = MockBackend::new();
+        *b.sink_inputs.borrow_mut() = inputs;
+        b.sink_indices
+            .borrow_mut()
+            .insert("broadcast_filter_sink".into(), 8);
+        *b.sinks.borrow_mut() = vec![hw_sink(), filter_sink(), second_hw];
+
+        let mut state = default_state();
+        state.set_preferred_output_sink(Some(
+            "alsa_output.pci-0000_0c_00.4.analog-stereo".into(),
+        ));
+
+        apply_routes(&b, &state).unwrap();
+
+        let moved = b.moved_inputs.borrow();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0], (43, 10)); // preferred sink
+    }
+
+    #[test]
+    fn test_list_apps_hides_filter_output() {
+        let inputs = vec![
+            make_filter_output(43, 5),
+            make_input(100, 8, "brave", "Brave Browser", "Playback"),
+        ];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        let apps = list_apps(&backend, &state).unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].binary, "brave");
     }
 
     // ── bypass_all ─────────────────────────────────────────────────────

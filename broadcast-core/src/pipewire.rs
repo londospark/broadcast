@@ -27,6 +27,8 @@ pub struct SinkInput {
     pub client_name: String,
     pub app_binary: String,
     pub media_name: String,
+    /// PipeWire node.name (e.g. "broadcast_filter_output" for filter chain playback)
+    pub node_name: String,
 }
 
 /// An available audio device (sink or source) with a user-friendly description.
@@ -175,6 +177,11 @@ pub fn parse_sink_inputs(items: &[serde_json::Value]) -> Vec<SinkInput> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let node_name = props
+            .and_then(|p| p.get("node.name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         inputs.push(SinkInput {
             id,
@@ -182,6 +189,7 @@ pub fn parse_sink_inputs(items: &[serde_json::Value]) -> Vec<SinkInput> {
             client_name,
             app_binary,
             media_name,
+            node_name,
         });
     }
     inputs
@@ -310,7 +318,8 @@ mod tests {
                 "properties": {
                     "application.name": "Brave Browser",
                     "application.process.binary": "brave",
-                    "media.name": "Playback"
+                    "media.name": "Playback",
+                    "node.name": "Brave Browser"
                 }
             }),
             json!({
@@ -319,7 +328,8 @@ mod tests {
                 "properties": {
                     "application.name": "Spotify",
                     "application.process.binary": "spotify",
-                    "media.name": "Music"
+                    "media.name": "Music",
+                    "node.name": "Spotify"
                 }
             }),
         ];
@@ -331,10 +341,12 @@ mod tests {
         assert_eq!(inputs[0].client_name, "Brave Browser");
         assert_eq!(inputs[0].app_binary, "brave");
         assert_eq!(inputs[0].media_name, "Playback");
+        assert_eq!(inputs[0].node_name, "Brave Browser");
 
         assert_eq!(inputs[1].id, 101);
         assert_eq!(inputs[1].sink_name, "8");
         assert_eq!(inputs[1].app_binary, "spotify");
+        assert_eq!(inputs[1].node_name, "Spotify");
     }
 
     #[test]
