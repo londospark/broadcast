@@ -453,9 +453,7 @@ mod tests {
         *b.sinks.borrow_mut() = vec![hw_sink(), filter_sink(), second_hw];
 
         let mut state = default_state();
-        state.set_preferred_output_sink(Some(
-            "alsa_output.pci-0000_0c_00.4.analog-stereo".into(),
-        ));
+        state.set_preferred_output_sink(Some("alsa_output.pci-0000_0c_00.4.analog-stereo".into()));
 
         apply_routes(&b, &state).unwrap();
 

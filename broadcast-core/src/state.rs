@@ -37,9 +37,7 @@ impl std::str::FromStr for Backend {
         match s.to_lowercase().as_str() {
             "deepfilter" | "deepfilternet" | "df" => Ok(Backend::DeepFilter),
             "maxine" | "nvidia" | "nvafx" => Ok(Backend::Maxine),
-            _ => anyhow::bail!(
-                "Invalid backend: {s}. Use 'deepfilter' or 'maxine'"
-            ),
+            _ => anyhow::bail!("Invalid backend: {s}. Use 'deepfilter' or 'maxine'"),
         }
     }
 }
@@ -377,7 +375,10 @@ mod tests {
 
     #[test]
     fn test_backend_from_str() {
-        assert_eq!("deepfilter".parse::<Backend>().unwrap(), Backend::DeepFilter);
+        assert_eq!(
+            "deepfilter".parse::<Backend>().unwrap(),
+            Backend::DeepFilter
+        );
         assert_eq!("maxine".parse::<Backend>().unwrap(), Backend::Maxine);
         assert_eq!("df".parse::<Backend>().unwrap(), Backend::DeepFilter);
         assert_eq!("nvidia".parse::<Backend>().unwrap(), Backend::Maxine);

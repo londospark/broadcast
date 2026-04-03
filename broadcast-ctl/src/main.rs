@@ -452,9 +452,7 @@ fn cmd_fix_routing(backend: &dyn PipeWireBackend) -> Result<()> {
     }
 
     if !health.filters_loaded {
-        println!(
-            "  ! Filter chains missing — run: broadcast-ctl install-config --apply"
-        );
+        println!("  ! Filter chains missing — run: broadcast-ctl install-config --apply");
     }
 
     Ok(())
@@ -463,8 +461,7 @@ fn cmd_fix_routing(backend: &dyn PipeWireBackend) -> Result<()> {
 /// Generate and enable a systemd user service for broadcast.
 fn cmd_install_service() -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let service_dir = std::path::PathBuf::from(&home)
-        .join(".config/systemd/user");
+    let service_dir = std::path::PathBuf::from(&home).join(".config/systemd/user");
     std::fs::create_dir_all(&service_dir)?;
 
     let binary = std::env::current_exe()
@@ -518,7 +515,9 @@ fn cmd_set_backend(backend: &dyn PipeWireBackend, name: &str) -> Result<()> {
     state.backend = new_backend;
     state.save()?;
     eprintln!("Backend set to: {new_backend}");
-    eprintln!("Run 'broadcast-ctl install-config --apply' to reload PipeWire with the new backend.");
+    eprintln!(
+        "Run 'broadcast-ctl install-config --apply' to reload PipeWire with the new backend."
+    );
     if state.active {
         let _ = filter::set_filter_active(backend, &state, true);
     }
@@ -530,8 +529,7 @@ fn cmd_set_backend(backend: &dyn PipeWireBackend, name: &str) -> Result<()> {
 fn cmd_install_config(apply: bool) -> Result<()> {
     let state = BroadcastState::load()?;
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let conf_dir = std::path::PathBuf::from(&home)
-        .join(".config/pipewire/pipewire.conf.d");
+    let conf_dir = std::path::PathBuf::from(&home).join(".config/pipewire/pipewire.conf.d");
     std::fs::create_dir_all(&conf_dir)?;
 
     match state.backend {
@@ -654,9 +652,10 @@ fn resolve_maxine_plugin() -> Result<String> {
     }
 
     // Check next to the current binary (cargo target dir after `cargo build --release`)
-    let cargo_built = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|dir| dir.join("libbroadcast_maxine_ladspa.so")));
+    let cargo_built = std::env::current_exe().ok().and_then(|p| {
+        p.parent()
+            .map(|dir| dir.join("libbroadcast_maxine_ladspa.so"))
+    });
 
     if let Some(ref built_so) = cargo_built {
         if built_so.exists() {

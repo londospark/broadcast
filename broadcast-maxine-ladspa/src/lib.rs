@@ -15,8 +15,6 @@ extern "C" {
 /// Returns NULL for any other index.
 #[cfg(has_nvafx)]
 #[no_mangle]
-pub unsafe extern "C" fn ladspa_descriptor(
-    index: core::ffi::c_ulong,
-) -> *const core::ffi::c_void {
+pub unsafe extern "C" fn ladspa_descriptor(index: core::ffi::c_ulong) -> *const core::ffi::c_void {
     _maxine_ladspa_descriptor_impl(index)
 }

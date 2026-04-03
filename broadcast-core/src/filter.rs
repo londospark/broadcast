@@ -86,8 +86,7 @@ pub fn filter_health(backend: &dyn PipeWireBackend, state: &BroadcastState) -> F
     let default_source_correct = match backend.get_default_source() {
         Ok(source) => {
             // Accept either the playback node name or an exact match
-            source == *expected_source
-                || source.contains(expected_source.as_str())
+            source == *expected_source || source.contains(expected_source.as_str())
         }
         Err(_) => false,
     };
@@ -128,10 +127,7 @@ fn check_node_running(objects: &[Value], node_name: &str) -> bool {
             continue;
         }
         // If the node has a state field, check it's not "suspended"
-        if let Some(state_str) = obj
-            .pointer("/info/state")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(state_str) = obj.pointer("/info/state").and_then(|v| v.as_str()) {
             return state_str != "suspended";
         }
         // Node exists but no state field — assume running
@@ -389,7 +385,10 @@ mod tests {
         assert!(!h.output_running);
         // Both input and output suspended are fine — passive nodes that wake on demand.
         // No issues should be reported when only the filter chains are suspended.
-        assert!(h.is_ok(), "suspended filters are expected passive behaviour, not an error");
+        assert!(
+            h.is_ok(),
+            "suspended filters are expected passive behaviour, not an error"
+        );
     }
 
     #[test]

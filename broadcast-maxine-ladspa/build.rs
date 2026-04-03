@@ -29,11 +29,11 @@ fn main() {
     //   nvafx/lib/           — libnv_audiofx.so (base SDK)
     //   features/denoiser/lib/ — libnv_audiofx_denoiser.so (denoiser feature)
     //   external/cuda/lib/   — bundled CUDA/TRT/cuDNN (no system CUDA needed)
-    let core_include  = sdk_root.join("nvafx/include");
-    let feat_include  = sdk_root.join("features/denoiser/include");
-    let core_lib      = sdk_root.join("nvafx/lib");
-    let feat_lib      = sdk_root.join("features/denoiser/lib");
-    let bundled_cuda  = sdk_root.join("external/cuda/lib");
+    let core_include = sdk_root.join("nvafx/include");
+    let feat_include = sdk_root.join("features/denoiser/include");
+    let core_lib = sdk_root.join("nvafx/lib");
+    let feat_lib = sdk_root.join("features/denoiser/lib");
+    let bundled_cuda = sdk_root.join("external/cuda/lib");
 
     cc::Build::new()
         .file("src/maxine_ladspa.c")

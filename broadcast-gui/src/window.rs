@@ -91,11 +91,14 @@ impl BroadcastWindow {
                     was_active.set(true);
                 } else if was_active.get() {
                     let w = w.clone();
-                    glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
-                        if !w.is_active() {
-                            w.close();
-                        }
-                    });
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(250),
+                        move || {
+                            if !w.is_active() {
+                                w.close();
+                            }
+                        },
+                    );
                 }
             });
         }
@@ -317,8 +320,8 @@ impl BroadcastWindow {
         intensity_scale.set_hexpand(true);
         intensity_scale.set_size_request(180, -1);
         // Mark key positions
-        intensity_scale.add_mark(0.0,   gtk::PositionType::Bottom, Some("Off"));
-        intensity_scale.add_mark(50.0,  gtk::PositionType::Bottom, Some("50%"));
+        intensity_scale.add_mark(0.0, gtk::PositionType::Bottom, Some("Off"));
+        intensity_scale.add_mark(50.0, gtk::PositionType::Bottom, Some("50%"));
         intensity_scale.add_mark(100.0, gtk::PositionType::Bottom, Some("Full"));
 
         let intensity_row = adw::ActionRow::builder()
