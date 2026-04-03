@@ -492,24 +492,30 @@ mod tests {
 
     #[test]
     fn test_sanitize_clamps_intensity_above_one() {
-        let mut s = BroadcastState::default();
-        s.maxine_intensity = 1.5;
+        let mut s = BroadcastState {
+            maxine_intensity: 1.5,
+            ..Default::default()
+        };
         s.sanitize();
         assert_eq!(s.maxine_intensity, 1.0);
     }
 
     #[test]
     fn test_sanitize_clamps_intensity_below_zero() {
-        let mut s = BroadcastState::default();
-        s.maxine_intensity = -0.5;
+        let mut s = BroadcastState {
+            maxine_intensity: -0.5,
+            ..Default::default()
+        };
         s.sanitize();
         assert_eq!(s.maxine_intensity, 0.0);
     }
 
     #[test]
     fn test_maxine_intensity_serde_roundtrip() {
-        let mut s = BroadcastState::default();
-        s.maxine_intensity = 0.75;
+        let s = BroadcastState {
+            maxine_intensity: 0.75,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let s2: BroadcastState = serde_json::from_str(&json).unwrap();
         assert!((s2.maxine_intensity - 0.75).abs() < 1e-6);
