@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,6 +38,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
+        # broadcast-maxine-ladspa compiles as an empty stub without NVAFX_SDK — that's fine.
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests

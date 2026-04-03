@@ -4,6 +4,7 @@ members = [
     "broadcast-core",
     "broadcast-ctl",
     "broadcast-gui",
+    "broadcast-maxine-ladspa",
 ]
 
 [workspace.package]

@@ -4,7 +4,9 @@ pub mod pipewire;
 pub mod routing;
 pub mod state;
 
+pub use filter::FilterHealth;
 pub use pipewire::AudioDevice;
+pub use state::Backend;
 
 use anyhow::Result;
 use backend::PipeWireBackend;
@@ -23,6 +25,22 @@ pub fn list_output_devices(
 pub fn list_input_devices(backend: &dyn PipeWireBackend) -> Result<Vec<AudioDevice>> {
     let sources = backend.list_sources()?;
     Ok(parse_sources_as_devices(&sources))
+}
+
+/// Returns the path to the installed Maxine LADSPA plugin, if available.
+/// Checks `~/.local/lib/ladspa/` and `/usr/lib/ladspa/` in that order.
+pub fn maxine_plugin_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        std::path::PathBuf::from(&home).join(".local/lib/ladspa/libmaxine_ladspa.so"),
+        std::path::PathBuf::from("/usr/lib/ladspa/libmaxine_ladspa.so"),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// Returns true if the Maxine LADSPA plugin is installed and ready to use.
+pub fn is_maxine_available() -> bool {
+    maxine_plugin_path().is_some()
 }
 
 #[cfg(test)]

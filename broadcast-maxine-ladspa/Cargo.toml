@@ -1,0 +1,13 @@
+[package]
+name = "broadcast-maxine-ladspa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NVIDIA Maxine Audio Effects LADSPA plugin for PipeWire filter chains"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+cc = "1"

@@ -19,6 +19,10 @@ pub trait PipeWireBackend {
     fn set_param(&self, node_id: u64, param_type: &str, param_value: &str) -> Result<()>;
     /// Get the default audio sink name.
     fn get_default_sink(&self) -> Result<String>;
+    /// Get the current default audio source node name.
+    fn get_default_source(&self) -> Result<String>;
+    /// Set the default audio source by node name (pactl set-default-source).
+    fn set_default_source(&self, source_name: &str) -> Result<()>;
     /// List all sinks as JSON (pactl list sinks).
     fn list_sinks(&self) -> Result<Vec<serde_json::Value>>;
     /// List all sources as JSON (pactl list sources).
@@ -92,6 +96,31 @@ impl PipeWireBackend for RealBackend {
             .context("Failed to run wpctl inspect")?;
         let text = String::from_utf8_lossy(&output.stdout);
         Ok(pipewire::parse_default_sink(&text))
+    }
+
+    fn get_default_source(&self) -> Result<String> {
+        let output = Command::new("pactl")
+            .args(["info"])
+            .output()
+            .context("Failed to run pactl info")?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("Default Source: ") {
+                return Ok(rest.trim().to_string());
+            }
+        }
+        Ok(String::new())
+    }
+
+    fn set_default_source(&self, source_name: &str) -> Result<()> {
+        let status = Command::new("pactl")
+            .args(["set-default-source", source_name])
+            .status()
+            .context("Failed to run pactl set-default-source")?;
+        if !status.success() {
+            anyhow::bail!("pactl set-default-source failed for '{source_name}'");
+        }
+        Ok(())
     }
 
     fn list_sinks(&self) -> Result<Vec<serde_json::Value>> {

@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa
       - uses: actions/checkout@v4
       - run: cargo test
 
@@ -30,17 +30,51 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa \
+            cuda python python-pip
       - uses: actions/checkout@v4
+
+      # ── Optional: download Maxine SDK and build GPU plugin ─────────────
+      # Set NGC_API_KEY as a GitHub Actions secret to enable Maxine builds.
+      - name: Download NVIDIA Maxine SDK (optional)
+        if: ${{ secrets.NGC_API_KEY != '' }}
+        env:
+          NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
+        run: |
+          pip install --quiet ngc-cli
+          mkdir -p $HOME/.local/share/nvidia-maxine-sdk
+          ngc registry resource download-version \
+            --dest $HOME/.local/share/nvidia-maxine-sdk \
+            "nvidia/maxine/maxine_linux_audio_effects_sdk:latest" || true
+          SDK_DIR=$(find $HOME/.local/share/nvidia-maxine-sdk -maxdepth 2 -name "nvAFX.h" \
+            -exec dirname {} \; 2>/dev/null | xargs dirname | head -1 || true)
+          if [ -n "$SDK_DIR" ]; then
+            ln -sfn "$SDK_DIR" $HOME/.local/share/nvidia-maxine-sdk/current
+            echo "NVAFX_SDK=$HOME/.local/share/nvidia-maxine-sdk/current" >> $GITHUB_ENV
+            echo "Maxine SDK ready at $SDK_DIR"
+          else
+            echo "SDK download succeeded but nvAFX.h not found — skipping Maxine build"
+          fi
+
       - name: Build release binaries
         run: cargo build --release
+
       - name: Prepare assets
         run: |
           mkdir -p release
           cp target/release/broadcast-ctl release/
           cp target/release/broadcast-gui release/
           chmod +x release/broadcast-ctl release/broadcast-gui
-          cd release && tar czf broadcast-x86_64-linux.tar.gz broadcast-ctl broadcast-gui
+          # Include Maxine plugin only if it has the ladspa_descriptor symbol (not an empty stub)
+          if [ -f target/release/libbroadcast_maxine_ladspa.so ]; then
+            if nm target/release/libbroadcast_maxine_ladspa.so 2>/dev/null | grep -q ladspa_descriptor; then
+              cp target/release/libbroadcast_maxine_ladspa.so release/
+              echo "Maxine plugin included in release"
+            fi
+          fi
+          cd release && tar czf broadcast-x86_64-linux.tar.gz broadcast-ctl broadcast-gui \
+            $(ls libbroadcast_maxine_ladspa.so 2>/dev/null || true)
+
       - uses: actions/upload-artifact@v4
         with:
           name: arch-binaries
@@ -54,7 +88,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev pkg-config
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev \
+            pkg-config ladspa-sdk
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deb
@@ -80,7 +115,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          dnf install -y gcc gtk4-devel libadwaita-devel gtk4-layer-shell-devel pkg-config rust cargo git
+          dnf install -y gcc gtk4-devel libadwaita-devel gtk4-layer-shell-devel \
+            pkg-config rust cargo git ladspa-devel
       - uses: actions/checkout@v4
       - name: Install cargo-generate-rpm
         run: cargo install cargo-generate-rpm
@@ -110,6 +146,8 @@ jobs:
             artifacts/arch-binaries/broadcast-ctl
             artifacts/arch-binaries/broadcast-gui
             artifacts/arch-binaries/broadcast-x86_64-linux.tar.gz
+            artifacts/arch-binaries/libbroadcast_maxine_ladspa.so
             artifacts/deb-packages/*.deb
             artifacts/rpm-packages/*.rpm
           generate_release_notes: true
+

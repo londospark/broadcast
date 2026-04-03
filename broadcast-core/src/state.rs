@@ -7,6 +7,43 @@ use std::path::PathBuf;
 const STATE_DIR: &str = ".local/state/broadcast";
 const STATE_FILE: &str = "config.json";
 
+fn default_maxine_intensity() -> f32 {
+    1.0
+}
+
+/// The noise suppression backend to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// DeepFilterNet LADSPA plugin — CPU-based, works on any hardware.
+    #[default]
+    DeepFilter,
+    /// NVIDIA Maxine Audio Effects SDK — GPU-accelerated, requires RTX GPU + Maxine SDK.
+    Maxine,
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Backend::DeepFilter => write!(f, "deepfilter"),
+            Backend::Maxine => write!(f, "maxine"),
+        }
+    }
+}
+
+impl std::str::FromStr for Backend {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "deepfilter" | "deepfilternet" | "df" => Ok(Backend::DeepFilter),
+            "maxine" | "nvidia" | "nvafx" => Ok(Backend::Maxine),
+            _ => anyhow::bail!(
+                "Invalid backend: {s}. Use 'deepfilter' or 'maxine'"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppRoute {
@@ -72,6 +109,13 @@ pub struct BroadcastState {
     pub app_routes: HashMap<String, AppRoute>,
     #[serde(default)]
     pub nodes: NodeNames,
+    /// Which noise suppression backend to use.
+    #[serde(default)]
+    pub backend: Backend,
+    /// Noise suppression intensity for the Maxine backend (0.0 = off, 1.0 = maximum).
+    /// Stored as a value in [0.0, 1.0]; defaults to 1.0.
+    #[serde(default = "default_maxine_intensity")]
+    pub maxine_intensity: f32,
     /// Preferred output sink node.name (None = auto-detect first hardware sink)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_output_sink: Option<String>,
@@ -87,6 +131,8 @@ impl Default for BroadcastState {
             default_route: AppRoute::Direct,
             app_routes: HashMap::new(),
             nodes: NodeNames::default(),
+            backend: Backend::default(),
+            maxine_intensity: default_maxine_intensity(),
             preferred_output_sink: None,
             preferred_input_source: None,
         }
@@ -108,7 +154,8 @@ impl BroadcastState {
             return Ok(Self::default());
         }
         let data = fs::read_to_string(path).context("Failed to read state file")?;
-        let state: Self = serde_json::from_str(&data).context("Failed to parse state file")?;
+        let mut state: Self = serde_json::from_str(&data).context("Failed to parse state file")?;
+        state.sanitize();
         Ok(state)
     }
 
@@ -147,6 +194,16 @@ impl BroadcastState {
     /// Set the preferred input source (None to auto-detect).
     pub fn set_preferred_input_source(&mut self, source_name: Option<String>) {
         self.preferred_input_source = source_name;
+    }
+
+    /// Remove stale or malformed entries from app_routes:
+    /// - empty keys (serialisation artefacts)
+    /// - keys ending with " (deleted)" (from old GUI versions)
+    /// Also clamps maxine_intensity to [0.0, 1.0].
+    pub fn sanitize(&mut self) {
+        self.app_routes
+            .retain(|k, _| !k.is_empty() && !k.contains("(deleted)"));
+        self.maxine_intensity = self.maxine_intensity.clamp(0.0, 1.0);
     }
 }
 
@@ -311,6 +368,77 @@ mod tests {
         assert!(!json.contains("preferred_input_source"));
     }
 
+    // ── Backend ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_backend_default_is_deepfilter() {
+        assert_eq!(BroadcastState::default().backend, Backend::DeepFilter);
+    }
+
+    #[test]
+    fn test_backend_from_str() {
+        assert_eq!("deepfilter".parse::<Backend>().unwrap(), Backend::DeepFilter);
+        assert_eq!("maxine".parse::<Backend>().unwrap(), Backend::Maxine);
+        assert_eq!("df".parse::<Backend>().unwrap(), Backend::DeepFilter);
+        assert_eq!("nvidia".parse::<Backend>().unwrap(), Backend::Maxine);
+        assert!("invalid".parse::<Backend>().is_err());
+    }
+
+    #[test]
+    fn test_backend_display() {
+        assert_eq!(Backend::DeepFilter.to_string(), "deepfilter");
+        assert_eq!(Backend::Maxine.to_string(), "maxine");
+    }
+
+    #[test]
+    fn test_backend_serde_roundtrip() {
+        let mut s = BroadcastState::default();
+        s.backend = Backend::Maxine;
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: BroadcastState = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.backend, Backend::Maxine);
+    }
+
+    // ── sanitize ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_removes_empty_keys() {
+        let mut s = BroadcastState::default();
+        s.app_routes.insert("".to_string(), AppRoute::Direct);
+        s.app_routes.insert("brave".to_string(), AppRoute::Filtered);
+        s.sanitize();
+        assert!(!s.app_routes.contains_key(""));
+        assert!(s.app_routes.contains_key("brave"));
+    }
+
+    #[test]
+    fn test_sanitize_removes_deleted_entries() {
+        let mut s = BroadcastState::default();
+        s.app_routes
+            .insert("brave (deleted)".to_string(), AppRoute::Filtered);
+        s.app_routes.insert("spotify".to_string(), AppRoute::Direct);
+        s.sanitize();
+        assert!(!s.app_routes.contains_key("brave (deleted)"));
+        assert!(s.app_routes.contains_key("spotify"));
+    }
+
+    #[test]
+    fn test_load_sanitizes_on_load() {
+        let dir = std::env::temp_dir().join(format!("broadcast_sanitize_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        // Write state with stale entries as-if from old config file
+        let raw = r#"{"active":true,"default_route":"direct","app_routes":{"":"direct","brave (deleted)":"filtered","electron":"direct"}}"#;
+        std::fs::write(&path, raw).unwrap();
+
+        let state = BroadcastState::load_from(&path).unwrap();
+        assert!(!state.app_routes.contains_key(""));
+        assert!(!state.app_routes.contains_key("brave (deleted)"));
+        assert!(state.app_routes.contains_key("electron"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // ── File I/O (load / save) ─────────────────────────────────────────
 
     #[test]
@@ -350,5 +478,45 @@ mod tests {
         assert!(BroadcastState::load_from(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── maxine_intensity ───────────────────────────────────────────────
+
+    #[test]
+    fn test_maxine_intensity_default() {
+        let s = BroadcastState::default();
+        assert_eq!(s.maxine_intensity, 1.0);
+    }
+
+    #[test]
+    fn test_sanitize_clamps_intensity_above_one() {
+        let mut s = BroadcastState::default();
+        s.maxine_intensity = 1.5;
+        s.sanitize();
+        assert_eq!(s.maxine_intensity, 1.0);
+    }
+
+    #[test]
+    fn test_sanitize_clamps_intensity_below_zero() {
+        let mut s = BroadcastState::default();
+        s.maxine_intensity = -0.5;
+        s.sanitize();
+        assert_eq!(s.maxine_intensity, 0.0);
+    }
+
+    #[test]
+    fn test_maxine_intensity_serde_roundtrip() {
+        let mut s = BroadcastState::default();
+        s.maxine_intensity = 0.75;
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: BroadcastState = serde_json::from_str(&json).unwrap();
+        assert!((s2.maxine_intensity - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_maxine_intensity_defaults_to_one_when_missing() {
+        let json = r#"{"active":true,"default_route":"direct"}"#;
+        let s: BroadcastState = serde_json::from_str(json).unwrap();
+        assert_eq!(s.maxine_intensity, 1.0);
     }
 }

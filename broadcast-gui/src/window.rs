@@ -5,9 +5,9 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use broadcast_core::backend::RealBackend;
-use broadcast_core::state::{AppRoute, BroadcastState};
-use broadcast_core::{filter, routing, AudioDevice};
+use broadcast_core::backend::{PipeWireBackend, RealBackend};
+use broadcast_core::state::{AppRoute, Backend, BroadcastState};
+use broadcast_core::{filter, is_maxine_available, routing, AudioDevice, FilterHealth};
 
 use crate::app_row::AppRow;
 
@@ -20,6 +20,9 @@ mod imp {
         pub app_list: RefCell<Option<gtk::ListBox>>,
         pub state: RefCell<BroadcastState>,
         pub menu_mode: Cell<bool>,
+        pub toast_overlay: RefCell<Option<adw::ToastOverlay>>,
+        pub health_status_label: RefCell<Option<gtk::Label>>,
+        pub health_row: RefCell<Option<adw::ActionRow>>,
     }
 
     #[glib::object_subclass]
@@ -208,6 +211,26 @@ impl BroadcastWindow {
 
         status_group.add(&mic_row);
         status_group.add(&output_row);
+
+        // Health status row
+        let health_row = adw::ActionRow::builder()
+            .title("Filter Health")
+            .subtitle("Checking...")
+            .build();
+        let health_icon = gtk::Image::from_icon_name("emblem-system-symbolic");
+        health_row.add_prefix(&health_icon);
+        let health_status_label = gtk::Label::new(Some("…"));
+        health_status_label.add_css_class("dim-label");
+        let fix_btn = gtk::Button::builder()
+            .label("Fix")
+            .valign(gtk::Align::Center)
+            .tooltip_text("Attempt to repair routing issues")
+            .css_classes(vec!["flat".to_string()])
+            .build();
+        health_row.add_suffix(&health_status_label);
+        health_row.add_suffix(&fix_btn);
+        status_group.add(&health_row);
+
         content.append(&status_group);
 
         // Device selection section
@@ -240,6 +263,71 @@ impl BroadcastWindow {
             state.preferred_input_source.as_deref(),
         );
         device_group.add(&input_combo);
+
+        // Backend selector with availability status
+        let maxine_available = is_maxine_available();
+        let maxine_label = if maxine_available {
+            "Maxine (NVIDIA RTX)  ✓"
+        } else {
+            "Maxine (NVIDIA RTX)  — not installed"
+        };
+        let backend_model = gtk::StringList::new(&["DeepFilter (CPU)", maxine_label]);
+        let backend_selected: u32 = match state.backend {
+            Backend::DeepFilter => 0,
+            Backend::Maxine => 1,
+        };
+        let backend_combo = adw::ComboRow::builder()
+            .title("Backend")
+            .subtitle(if maxine_available {
+                "Noise suppression engine"
+            } else {
+                "Maxine not installed — run: scripts/install-maxine-sdk.sh"
+            })
+            .model(&backend_model)
+            .selected(backend_selected)
+            .build();
+        device_group.add(&backend_combo);
+
+        // Warn if Maxine is selected but not installed
+        if state.backend == Backend::Maxine && !maxine_available {
+            let warn_row = adw::ActionRow::builder()
+                .title("Maxine plugin not installed")
+                .subtitle("Run: NGC_API_KEY=your_key bash scripts/install-maxine-sdk.sh")
+                .build();
+            let warn_icon = gtk::Image::from_icon_name("dialog-warning-symbolic");
+            warn_icon.add_css_class("warning");
+            warn_row.add_prefix(&warn_icon);
+            device_group.add(&warn_row);
+        }
+
+        // Maxine intensity slider — only visible when Maxine backend is active
+        let intensity_pct = (state.maxine_intensity * 100.0).round() as i32;
+        let intensity_adj = gtk::Adjustment::new(
+            intensity_pct as f64, // value
+            0.0,                  // lower
+            100.0,                // upper
+            1.0,                  // step
+            10.0,                 // page
+            0.0,                  // page_size
+        );
+        let intensity_scale = gtk::Scale::new(gtk::Orientation::Horizontal, Some(&intensity_adj));
+        intensity_scale.set_draw_value(true);
+        intensity_scale.set_value_pos(gtk::PositionType::Right);
+        intensity_scale.set_digits(0);
+        intensity_scale.set_hexpand(true);
+        intensity_scale.set_size_request(180, -1);
+        // Mark key positions
+        intensity_scale.add_mark(0.0,   gtk::PositionType::Bottom, Some("Off"));
+        intensity_scale.add_mark(50.0,  gtk::PositionType::Bottom, Some("50%"));
+        intensity_scale.add_mark(100.0, gtk::PositionType::Bottom, Some("Full"));
+
+        let intensity_row = adw::ActionRow::builder()
+            .title("Suppression intensity")
+            .subtitle("How aggressively Maxine removes noise (0 = off, 100 = maximum)")
+            .build();
+        intensity_row.add_suffix(&intensity_scale);
+        intensity_row.set_visible(state.backend == Backend::Maxine);
+        device_group.add(&intensity_row);
 
         content.append(&device_group);
 
@@ -298,13 +386,18 @@ impl BroadcastWindow {
         }
         toolbar_view.set_content(Some(&scrolled));
 
-        self.set_content(Some(&toolbar_view));
+        let toast_overlay = adw::ToastOverlay::new();
+        toast_overlay.set_child(Some(&toolbar_view));
+        self.set_content(Some(&toast_overlay));
 
         // Store refs
         let imp = self.imp();
         *imp.master_switch.borrow_mut() = Some(master_switch.clone());
         *imp.app_list.borrow_mut() = Some(app_list);
         *imp.state.borrow_mut() = state;
+        *imp.toast_overlay.borrow_mut() = Some(toast_overlay);
+        *imp.health_status_label.borrow_mut() = Some(health_status_label.clone());
+        *imp.health_row.borrow_mut() = Some(health_row.clone());
 
         // Connect master switch
         let win = self.clone();
@@ -312,13 +405,26 @@ impl BroadcastWindow {
             let backend = RealBackend;
             let mut state = win.imp().state.borrow_mut();
             state.active = active;
-            let _ = filter::set_filter_active(&backend, &state, active);
-            if active {
-                let _ = routing::apply_routes(&backend, &state);
-            } else {
-                let _ = routing::bypass_all(&backend, &state);
+            if let Err(e) = filter::set_filter_active(&backend, &state, active) {
+                drop(state);
+                win.show_toast(&format!("Filter error: {e}"));
+                return glib::Propagation::Proceed;
             }
-            let _ = state.save();
+            if active {
+                if let Err(e) = routing::apply_routes(&backend, &state) {
+                    win.show_toast(&format!("Routing error: {e}"));
+                }
+                // Set default source to the clean filtered mic
+                let source = state.nodes.input_capture.replace("capture.", "");
+                if let Err(e) = backend.set_default_source(&source) {
+                    win.show_toast(&format!("Could not set default source: {e}"));
+                }
+            } else if let Err(e) = routing::bypass_all(&backend, &state) {
+                win.show_toast(&format!("Bypass error: {e}"));
+            }
+            if let Err(e) = state.save() {
+                win.show_toast(&format!("Save error: {e}"));
+            }
 
             mic_status.set_text(if active { "Active" } else { "Bypassed" });
             output_status.set_text(if active { "Filtered" } else { "Bypassed" });
@@ -365,10 +471,17 @@ impl BroadcastWindow {
                     state.set_preferred_output_sink(Some(output_devices[dev_idx].name.clone()));
                 }
             }
-            let _ = state.save();
+            if let Err(e) = state.save() {
+                drop(state);
+                win.show_toast(&format!("Save error: {e}"));
+                return;
+            }
             if state.active {
                 let backend = RealBackend;
-                let _ = routing::apply_routes(&backend, &state);
+                if let Err(e) = routing::apply_routes(&backend, &state) {
+                    drop(state);
+                    win.show_toast(&format!("Routing error: {e}"));
+                }
             }
         });
 
@@ -385,7 +498,87 @@ impl BroadcastWindow {
                     state.set_preferred_input_source(Some(input_devices[dev_idx].name.clone()));
                 }
             }
-            let _ = state.save();
+            if let Err(e) = state.save() {
+                drop(state);
+                win.show_toast(&format!("Save error: {e}"));
+            }
+        });
+
+        // Connect backend combo
+        let win = self.clone();
+        let intensity_row_clone = intensity_row.clone();
+        backend_combo.connect_selected_notify(move |combo| {
+            let new_backend = match combo.selected() {
+                1 => Backend::Maxine,
+                _ => Backend::DeepFilter,
+            };
+            // Check Maxine availability before switching
+            if new_backend == Backend::Maxine && !is_maxine_available() {
+                win.show_toast(
+                    "Maxine not installed. Run: NGC_API_KEY=… bash scripts/install-maxine-sdk.sh",
+                );
+                return;
+            }
+            let mut state = win.imp().state.borrow_mut();
+            state.backend = new_backend;
+            if let Err(e) = state.save() {
+                drop(state);
+                win.show_toast(&format!("Save error: {e}"));
+                return;
+            }
+            drop(state);
+            intensity_row_clone.set_visible(new_backend == Backend::Maxine);
+            win.show_toast(&format!(
+                "Backend → {new_backend}  Run: broadcast-ctl install-config --apply"
+            ));
+        });
+
+        // Connect intensity slider
+        let win = self.clone();
+        intensity_adj.connect_value_changed(move |adj| {
+            let intensity = (adj.value() / 100.0) as f32;
+            let mut state = win.imp().state.borrow_mut();
+            state.maxine_intensity = intensity;
+            if let Err(e) = state.save() {
+                drop(state);
+                win.show_toast(&format!("Save error: {e}"));
+                return;
+            }
+            drop(state);
+            win.show_toast(&format!(
+                "Maxine intensity → {:.0}%  Run: broadcast-ctl install-config --apply",
+                intensity * 100.0
+            ));
+        });
+
+        // Connect Fix button
+        let win = self.clone();
+        fix_btn.connect_clicked(move |_| {
+            let backend = RealBackend;
+            let state = win.imp().state.borrow();
+            let health = filter::filter_health(&backend, &state);
+            drop(state);
+            if health.is_ok() {
+                win.show_toast("✓ Routing looks healthy");
+                return;
+            }
+            let state = win.imp().state.borrow();
+            let source = state.nodes.input_capture.replace("capture.", "");
+            if !health.default_source_correct {
+                if let Err(e) = backend.set_default_source(&source) {
+                    win.show_toast(&format!("Could not set default source: {e}"));
+                }
+            }
+            if state.active {
+                if let Err(e) = routing::apply_routes(&backend, &state) {
+                    drop(state);
+                    win.show_toast(&format!("Routing repair failed: {e}"));
+                    return;
+                }
+            }
+            drop(state);
+            win.show_toast("✓ Routing repaired");
+            win.refresh_health();
         });
     }
 
@@ -456,16 +649,71 @@ impl BroadcastWindow {
                 let is_active = {
                     let mut state = win.imp().state.borrow_mut();
                     state.set_app_route(&binary, route);
-                    let _ = state.save();
+                    if let Err(e) = state.save() {
+                        win.show_toast(&format!("Save error: {e}"));
+                    }
                     state.active
                 };
                 if is_active {
                     let state = win.imp().state.borrow();
-                    let _ = routing::route_app(&backend, &state, &binary, route);
+                    if let Err(e) = routing::route_app(&backend, &state, &binary, route) {
+                        drop(state);
+                        win.show_toast(&format!("Route error: {e}"));
+                    }
                 }
             });
 
             app_list.append(&row.widget());
+        }
+
+        drop(state);
+        self.refresh_health();
+    }
+
+    fn refresh_health(&self) {
+        let imp = self.imp();
+        let label_guard = imp.health_status_label.borrow();
+        let row_guard = imp.health_row.borrow();
+        let (label, row) = match (label_guard.as_ref(), row_guard.as_ref()) {
+            (Some(l), Some(r)) => (l, r),
+            _ => return,
+        };
+
+        let backend = RealBackend;
+        let state = imp.state.borrow();
+        let health = filter::filter_health(&backend, &state);
+        drop(state);
+
+        Self::apply_health_display(label, row, &health);
+    }
+
+    fn apply_health_display(label: &gtk::Label, row: &adw::ActionRow, health: &FilterHealth) {
+        if health.is_ok() {
+            label.set_text("OK");
+            label.remove_css_class("warning");
+            label.remove_css_class("error");
+            label.add_css_class("success");
+            row.set_subtitle("All filters running normally");
+        } else {
+            let issues_text = health.issues.join(" • ");
+            let short = if health.filters_loaded {
+                "⚠ Degraded"
+            } else {
+                "✗ Filters not loaded"
+            };
+            label.set_text(short);
+            label.remove_css_class("success");
+            label.remove_css_class("error");
+            label.add_css_class("warning");
+            row.set_subtitle(&issues_text);
+        }
+    }
+
+    fn show_toast(&self, msg: &str) {
+        if let Some(overlay) = self.imp().toast_overlay.borrow().as_ref() {
+            let toast = adw::Toast::new(msg);
+            toast.set_timeout(4);
+            overlay.add_toast(toast);
         }
     }
 }

@@ -16,12 +16,15 @@ pub struct MockBackend {
     pub sinks: RefCell<Vec<Value>>,
     pub sources: RefCell<Vec<Value>>,
     pub default_sink_name: RefCell<String>,
+    pub default_source_name: RefCell<String>,
     /// Tracks (input_id, sink_id) for each move_sink_input call.
     pub moved_inputs: RefCell<Vec<(u32, u32)>>,
     /// Tracks (node_id, param_type, param_value) for each set_param call.
     pub set_params: RefCell<Vec<(u64, String, String)>>,
     /// Tracks input_ids that were unmuted.
     pub unmuted_inputs: RefCell<Vec<u32>>,
+    /// Tracks source names set as default.
+    pub set_default_sources: RefCell<Vec<String>>,
 }
 
 impl MockBackend {
@@ -59,6 +62,18 @@ impl PipeWireBackend for MockBackend {
 
     fn get_default_sink(&self) -> Result<String> {
         Ok(self.default_sink_name.borrow().clone())
+    }
+
+    fn get_default_source(&self) -> Result<String> {
+        Ok(self.default_source_name.borrow().clone())
+    }
+
+    fn set_default_source(&self, source_name: &str) -> Result<()> {
+        self.set_default_sources
+            .borrow_mut()
+            .push(source_name.to_string());
+        *self.default_source_name.borrow_mut() = source_name.to_string();
+        Ok(())
     }
 
     fn list_sinks(&self) -> Result<Vec<Value>> {
