@@ -197,6 +197,7 @@ impl BroadcastState {
     /// Remove stale or malformed entries from app_routes:
     /// - empty keys (serialisation artefacts)
     /// - keys ending with " (deleted)" (from old GUI versions)
+    ///
     /// Also clamps maxine_intensity to [0.0, 1.0].
     pub fn sanitize(&mut self) {
         self.app_routes
