@@ -394,8 +394,10 @@ mod tests {
 
     #[test]
     fn test_backend_serde_roundtrip() {
-        let mut s = BroadcastState::default();
-        s.backend = Backend::Maxine;
+        let s = BroadcastState {
+            backend: Backend::Maxine,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         let s2: BroadcastState = serde_json::from_str(&json).unwrap();
         assert_eq!(s2.backend, Backend::Maxine);
