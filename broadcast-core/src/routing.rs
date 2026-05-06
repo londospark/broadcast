@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::backend::PipeWireBackend;
+use crate::pipewire;
 use crate::state::{AppRoute, BroadcastState};
 
 /// Pure function: find the default hardware sink index from a list of sinks,
@@ -35,7 +36,7 @@ pub fn find_default_sink_index(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         // Skip any sink that is part of our filter chain
-        if name == filter_sink_name || name.contains("broadcast_filter") {
+        if name == filter_sink_name || pipewire::is_broadcast_virtual_sink(name) {
             continue;
         }
         let media_class = props
@@ -296,6 +297,20 @@ mod tests {
     fn test_find_default_sink_index_no_sinks() {
         let sinks: Vec<serde_json::Value> = vec![];
         assert!(find_default_sink_index(&sinks, "broadcast_filter_sink", None).is_err());
+    }
+
+    #[test]
+    fn test_find_default_sink_index_skips_maxine_filter_sink_too() {
+        let maxine_sink = json!({
+            "index": 14,
+            "properties": {
+                "node.name": "broadcast_maxine_sink",
+                "media.class": "Audio/Sink"
+            }
+        });
+        let sinks = vec![maxine_sink, hw_sink()];
+        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
+        assert_eq!(idx, 5);
     }
 
     #[test]

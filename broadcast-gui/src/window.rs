@@ -261,7 +261,7 @@ impl BroadcastWindow {
         let input_devices = broadcast_core::list_input_devices(&backend).unwrap_or_default();
         let input_combo = Self::build_device_combo(
             "Input Device",
-            "Microphone fed into DeepFilterNet",
+            "Microphone fed into the active noise suppression backend",
             &input_devices,
             state.preferred_input_source.as_deref(),
         );
@@ -418,7 +418,7 @@ impl BroadcastWindow {
                     win.show_toast(&format!("Routing error: {e}"));
                 }
                 // Set default source to the clean filtered mic
-                let source = state.nodes.input_capture.replace("capture.", "");
+                let source = state.filtered_source_name();
                 if let Err(e) = backend.set_default_source(&source) {
                     win.show_toast(&format!("Could not set default source: {e}"));
                 }
@@ -523,7 +523,7 @@ impl BroadcastWindow {
                 return;
             }
             let mut state = win.imp().state.borrow_mut();
-            state.backend = new_backend;
+            state.set_backend(new_backend);
             if let Err(e) = state.save() {
                 drop(state);
                 win.show_toast(&format!("Save error: {e}"));
@@ -566,7 +566,7 @@ impl BroadcastWindow {
                 return;
             }
             let state = win.imp().state.borrow();
-            let source = state.nodes.input_capture.replace("capture.", "");
+            let source = state.filtered_source_name();
             if !health.default_source_correct {
                 if let Err(e) = backend.set_default_source(&source) {
                     win.show_toast(&format!("Could not set default source: {e}"));

@@ -40,6 +40,14 @@ pub struct AudioDevice {
     pub description: String,
 }
 
+pub fn is_broadcast_virtual_sink(name: &str) -> bool {
+    matches!(name, "broadcast_filter_sink" | "broadcast_maxine_sink")
+}
+
+pub fn is_broadcast_virtual_source(name: &str) -> bool {
+    matches!(name, "deepfilter_mic" | "maxine_mic")
+}
+
 /// Parse pactl JSON sinks into a list of available hardware output devices,
 /// filtering out broadcast filter sinks and virtual sinks.
 pub fn parse_sinks_as_devices(
@@ -53,7 +61,7 @@ pub fn parse_sinks_as_devices(
             .and_then(|p| p.get("node.name"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if name.is_empty() || name == filter_sink_name || name.contains("broadcast_filter") {
+        if name.is_empty() || name == filter_sink_name || is_broadcast_virtual_sink(name) {
             continue;
         }
         let media_class = props
@@ -107,8 +115,8 @@ pub fn parse_sources_as_devices(sources: &[serde_json::Value]) -> Vec<AudioDevic
         if media_class.contains("Sink") {
             continue;
         }
-        // Skip deepfilter virtual mic
-        if name.contains("deepfilter") {
+        // Skip the filtered virtual microphones exported by the broadcast stack.
+        if is_broadcast_virtual_source(name) {
             continue;
         }
         let description = props
@@ -223,6 +231,59 @@ pub fn find_sink_index_in(sinks: &[serde_json::Value], node_name: &str) -> Optio
         }
     }
     None
+}
+
+/// Enable or disable Maxine filter configs by moving 50-maxine-*.conf files
+/// between pipewire.conf.d and maxine.saved, then restart PipeWire user services.
+pub fn set_maxine_enabled(enabled: bool) -> Result<()> {
+    if enabled && !crate::is_maxine_available() {
+        anyhow::bail!("Maxine plugin not found; install broadcast-maxine-ladspa and models");
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let conf_dir = std::path::PathBuf::from(&home).join(".config/pipewire");
+    let conf_d = conf_dir.join("pipewire.conf.d");
+    let saved = conf_dir.join("maxine.saved");
+
+    if enabled {
+        std::fs::create_dir_all(&conf_d)?;
+        if let Ok(entries) = std::fs::read_dir(&saved) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let name = fname.to_string_lossy();
+                if name.starts_with("50-maxine-") && name.ends_with(".conf") {
+                    let from = entry.path();
+                    let to = conf_d.join(name.as_ref());
+                    let _ = std::fs::rename(&from, &to).or_else(|_| {
+                        std::fs::copy(&from, &to).and_then(|_| std::fs::remove_file(&from))
+                    });
+                }
+            }
+        }
+    } else {
+        std::fs::create_dir_all(&saved)?;
+        if let Ok(entries) = std::fs::read_dir(&conf_d) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let name = fname.to_string_lossy();
+                if name.starts_with("50-maxine-") && name.ends_with(".conf") {
+                    let from = entry.path();
+                    let to = saved.join(name.as_ref());
+                    let _ = std::fs::rename(&from, &to).or_else(|_| {
+                        std::fs::copy(&from, &to).and_then(|_| std::fs::remove_file(&from))
+                    });
+                }
+            }
+        }
+    }
+
+    // Best-effort restart
+    let _ = std::process::Command::new("systemctl").args(["--user", "reset-failed", "pipewire"]).status();
+    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire"]).status();
+    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire-pulse"]).status();
+    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "wireplumber"]).status();
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +501,14 @@ mod tests {
                 }
             }),
             json!({
+                "index": 43,
+                "properties": {
+                    "node.name": "broadcast_maxine_sink",
+                    "node.description": "Broadcast Filter (Maxine)",
+                    "media.class": "Audio/Sink"
+                }
+            }),
+            json!({
                 "index": 71,
                 "properties": {
                     "node.name": "alsa_output.pci-0000_0a_00.1.hdmi-stereo",
@@ -537,6 +606,14 @@ mod tests {
                 "properties": {
                     "node.name": "deepfilter_mic",
                     "node.description": "Clean Mic (DeepFilter)",
+                    "media.class": "Audio/Source"
+                }
+            }),
+            json!({
+                "index": 42,
+                "properties": {
+                    "node.name": "maxine_mic",
+                    "node.description": "Clean Mic (Maxine)",
                     "media.class": "Audio/Source"
                 }
             }),

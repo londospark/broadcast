@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use broadcast_core::backend::{PipeWireBackend, RealBackend};
-use broadcast_core::state::Backend;
+use broadcast_core::state::{Backend, NodeNames};
 use broadcast_core::{filter, routing, state::BroadcastState};
 
 #[derive(Parser)]
@@ -390,10 +390,31 @@ fn cmd_set_device(
 /// Set the default PulseAudio/PipeWire source to the clean mic node.
 /// Derives the playback node name from the capture node name (strips "capture." prefix).
 fn ensure_default_source(backend: &dyn PipeWireBackend, state: &BroadcastState) {
-    let source_name = state.nodes.input_capture.replace("capture.", "");
+    let source_name = state.filtered_source_name();
     if let Err(e) = backend.set_default_source(&source_name) {
         eprintln!("⚠  Could not set default source to '{source_name}': {e}");
     }
+    if let Err(e) = write_wireplumber_default_source(source_name) {
+        eprintln!("⚠  Could not persist default source policy for '{source_name}': {e}");
+    }
+}
+
+fn write_wireplumber_default_source(source_name: &str) -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let conf_dir =
+        std::path::PathBuf::from(&home).join(".config/wireplumber/wireplumber.conf.d");
+    std::fs::create_dir_all(&conf_dir)?;
+    let conf_path = conf_dir.join("50-broadcast-defaults.conf");
+    let content = format!(
+        r#"# Broadcast defaults: hard-pin the filtered mic as the default audio source.
+# WirePlumber 0.5 supports setting defaults via wireplumber.settings.
+wireplumber.settings = {{
+  default.audio.source = "{source_name}"
+}}
+"#
+    );
+    std::fs::write(&conf_path, content)?;
+    Ok(())
 }
 
 // ── New commands ───────────────────────────────────────────────────────────
@@ -437,9 +458,14 @@ fn cmd_fix_routing(backend: &dyn PipeWireBackend) -> Result<()> {
     println!("\nAttempting repairs...");
 
     if !health.default_source_correct {
-        let source_name = state.nodes.input_capture.replace("capture.", "");
+        let source_name = state.filtered_source_name();
         match backend.set_default_source(&source_name) {
-            Ok(()) => println!("  ✓ Default source set to '{source_name}'"),
+            Ok(()) => {
+                println!("  ✓ Default source set to '{source_name}'");
+                if let Err(e) = write_wireplumber_default_source(source_name) {
+                    println!("  ⚠ Failed to persist default source policy: {e}");
+                }
+            }
             Err(e) => println!("  ✗ Failed to set default source: {e}"),
         }
     }
@@ -512,8 +538,9 @@ WantedBy=default.target
 fn cmd_set_backend(backend: &dyn PipeWireBackend, name: &str) -> Result<()> {
     let new_backend: Backend = name.parse()?;
     let mut state = BroadcastState::load()?;
-    state.backend = new_backend;
+    state.set_backend(new_backend);
     state.save()?;
+    write_wireplumber_default_source(state.filtered_source_name())?;
     eprintln!("Backend set to: {new_backend}");
     eprintln!(
         "Run 'broadcast-ctl install-config --apply' to reload PipeWire with the new backend."
@@ -537,12 +564,23 @@ fn cmd_install_config(apply: bool) -> Result<()> {
         Backend::Maxine => write_maxine_configs(&conf_dir, state.maxine_intensity)?,
     }
 
+    write_wireplumber_default_source(state.filtered_source_name())?;
+
     println!("✓ Filter chain configs written to {}", conf_dir.display());
 
     if apply {
         eprintln!("Restarting PipeWire...");
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
         let status = std::process::Command::new("systemctl")
-            .args(["--user", "restart", "pipewire.service"])
+            .args([
+                "--user",
+                "restart",
+                "pipewire.service",
+                "pipewire-pulse.service",
+                "wireplumber.service",
+            ])
             .status()?;
         if status.success() {
             println!("✓ PipeWire restarted");
@@ -567,6 +605,7 @@ fn cmd_install_config(apply: bool) -> Result<()> {
 const OUTPUT_LOOPBACK_CONF: &str = r#"context.modules = [
   {
     name = libpipewire-module-loopback
+    flags = [ nofail ]
     args = {
       node.description = "Broadcast Filter"
       capture.props = {
@@ -588,6 +627,7 @@ fn write_deepfilter_configs(conf_dir: &std::path::Path) -> Result<()> {
     let input_conf = r#"context.modules = [
   {
     name = libpipewire-module-filter-chain
+    flags = [ nofail ]
     args = {
       node.description = "Clean Mic (DeepFilter)"
       media.name        = "Clean Mic"
@@ -596,7 +636,7 @@ fn write_deepfilter_configs(conf_dir: &std::path::Path) -> Result<()> {
           {
             type   = ladspa
             name   = deepfilter
-            plugin = /usr/lib/ladspa/libdeep_filter_ladspa.so
+            plugin = "libdeep_filter_ladspa"
             label  = deep_filter_mono
             control = {
               "Attenuation Limit (dB)" = 100
@@ -627,6 +667,90 @@ fn write_deepfilter_configs(conf_dir: &std::path::Path) -> Result<()> {
     let _ = std::fs::remove_file(conf_dir.join("50-maxine-input.conf"));
     let _ = std::fs::remove_file(conf_dir.join("50-maxine-output.conf"));
     println!("  Wrote DeepFilterNet config (CPU-based noise suppression)");
+    Ok(())
+}
+
+fn write_maxine_systemd_env(conf_dir: &std::path::Path) -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let user_systemd_dir = std::path::PathBuf::from(&home).join(".config/systemd/user");
+    let dropin_dir = user_systemd_dir.join("pipewire.service.d");
+    let script_path = user_systemd_dir.join("generate_maxine_env.sh");
+    let dropin_path = dropin_dir.join("maxine-env.conf");
+
+    std::fs::create_dir_all(&dropin_dir)?;
+
+    let script = r#"#!/bin/sh
+set -eu
+
+SDK_DIR="${NVAFX_SDK:-$HOME/.local/share/nvidia-maxine-sdk/current}"
+ENV_FILE="$HOME/.config/systemd/user/pipewire-maxine.env"
+
+append_path() {
+  current="$1"
+  value="$2"
+
+  if [ -z "$current" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s:%s' "$current" "$value"
+  fi
+}
+
+LADSPA_PATH_VALUE=""
+for dir in "$HOME/.local/lib/ladspa" /usr/lib/ladspa /usr/lib64/ladspa /usr/lib; do
+  if [ -d "$dir" ]; then
+    LADSPA_PATH_VALUE="$(append_path "$LADSPA_PATH_VALUE" "$dir")"
+  fi
+done
+
+LD_LIBRARY_PATH_VALUE=""
+for dir in "$SDK_DIR/nvafx/lib" "$SDK_DIR/features/denoiser/lib" "$SDK_DIR/external/cuda/lib"; do
+  if [ -d "$dir" ]; then
+    LD_LIBRARY_PATH_VALUE="$(append_path "$LD_LIBRARY_PATH_VALUE" "$dir")"
+  fi
+done
+
+mkdir -p "$(dirname "$ENV_FILE")"
+
+tmpfile="$(mktemp "$ENV_FILE.XXXX")"
+if [ -d "$SDK_DIR" ]; then
+  printf '%s\n' "NVAFX_SDK=$SDK_DIR" > "$tmpfile"
+else
+  : > "$tmpfile"
+fi
+
+if [ -n "$LADSPA_PATH_VALUE" ]; then
+  printf '%s\n' "LADSPA_PATH=$LADSPA_PATH_VALUE" >> "$tmpfile"
+fi
+
+if [ -n "$LD_LIBRARY_PATH_VALUE" ]; then
+  printf '%s\n' "LD_LIBRARY_PATH=$LD_LIBRARY_PATH_VALUE" >> "$tmpfile"
+fi
+
+mv "$tmpfile" "$ENV_FILE"
+chmod 644 "$ENV_FILE"
+printf 'WROTE %s\n' "$ENV_FILE"
+"#;
+
+    let dropin = r#"[Service]
+# Generate Maxine paths dynamically and keep the env file optional.
+ExecStartPre=-%h/.config/systemd/user/generate_maxine_env.sh
+EnvironmentFile=-%h/.config/systemd/user/pipewire-maxine.env
+"#;
+
+    std::fs::write(&script_path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)?;
+    }
+    std::fs::write(&dropin_path, dropin)?;
+
+    println!("  Wrote Maxine PipeWire env helper: {}", script_path.display());
+    println!("  Wrote PipeWire user drop-in: {}", dropin_path.display());
+    let _ = conf_dir;
     Ok(())
 }
 
@@ -692,21 +816,24 @@ fn resolve_maxine_plugin() -> Result<String> {
 }
 
 fn write_maxine_configs(conf_dir: &std::path::Path, intensity: f32) -> Result<()> {
-    let plugin_path = resolve_maxine_plugin()?;
+    let _plugin_path = resolve_maxine_plugin()?;
+    let maxine_nodes = NodeNames::for_backend(Backend::Maxine);
+    write_maxine_systemd_env(conf_dir)?;
 
     let input_conf = format!(
         r#"context.modules = [
   {{
     name = libpipewire-module-filter-chain
+    flags = [ nofail ]
     args = {{
       node.description = "Clean Mic (Maxine)"
-      media.name        = "Clean Mic"
+      media.name        = "Clean Mic (Maxine)"
       filter.graph = {{
         nodes = [
           {{
             type   = ladspa
             name   = maxine_denoiser
-            plugin = {plugin_path}
+            plugin = "libmaxine_ladspa"
             label  = maxine_denoiser_mono
             control = {{
               "Intensity" = {intensity}
@@ -715,12 +842,12 @@ fn write_maxine_configs(conf_dir: &std::path::Path, intensity: f32) -> Result<()
         ]
       }}
       capture.props = {{
-        node.name    = "capture.deepfilter_mic"
+        node.name    = "{input_capture}"
         node.passive = true
         audio.rate   = 48000
       }}
       playback.props = {{
-        node.name    = "deepfilter_mic"
+        node.name    = "{input_source}"
         media.class  = Audio/Source
         audio.rate   = 48000
       }}
@@ -728,23 +855,25 @@ fn write_maxine_configs(conf_dir: &std::path::Path, intensity: f32) -> Result<()
   }}
 ]
 "#,
-        plugin_path = plugin_path,
         intensity = intensity,
+        input_capture = maxine_nodes.input_capture,
+        input_source = maxine_nodes.filtered_source_name(),
     );
 
     let output_conf = format!(
         r#"context.modules = [
   {{
     name = libpipewire-module-filter-chain
+    flags = [ nofail ]
     args = {{
-      node.description = "Broadcast Filter"
-      media.name        = "Broadcast Filter"
+      node.description = "Broadcast Filter (Maxine)"
+      media.name        = "Broadcast Filter (Maxine)"
       filter.graph = {{
         nodes = [
           {{
             type   = ladspa
             name   = maxine_denoiser
-            plugin = {plugin_path}
+            plugin = "libmaxine_ladspa"
             label  = maxine_denoiser_stereo
             control = {{
               "Intensity" = {intensity}
@@ -753,12 +882,12 @@ fn write_maxine_configs(conf_dir: &std::path::Path, intensity: f32) -> Result<()
         ]
       }}
       capture.props = {{
-        node.name    = "broadcast_filter_sink"
+        node.name    = "{output_sink}"
         media.class  = Audio/Sink
         audio.rate   = 48000
       }}
       playback.props = {{
-        node.name    = "broadcast_filter_output"
+        node.name    = "{output_playback}"
         node.passive = true
         audio.rate   = 48000
       }}
@@ -766,8 +895,9 @@ fn write_maxine_configs(conf_dir: &std::path::Path, intensity: f32) -> Result<()
   }}
 ]
 "#,
-        plugin_path = plugin_path,
         intensity = intensity,
+        output_sink = maxine_nodes.output_sink,
+        output_playback = maxine_nodes.output_playback,
     );
 
     std::fs::write(conf_dir.join("50-maxine-input.conf"), input_conf)?;

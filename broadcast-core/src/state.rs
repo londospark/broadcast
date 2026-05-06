@@ -71,7 +71,7 @@ impl std::str::FromStr for AppRoute {
 
 /// PipeWire node names used by the filter chains.
 /// These match the names in the PipeWire filter chain config files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeNames {
     /// The capture node of the input (mic) filter chain
     pub input_capture: String,
@@ -86,13 +86,36 @@ fn default_output_playback() -> String {
     "broadcast_filter_output".into()
 }
 
+impl NodeNames {
+    pub fn for_backend(backend: Backend) -> Self {
+        match backend {
+            Backend::DeepFilter => Self {
+                input_capture: "capture.deepfilter_mic".into(),
+                output_sink: "broadcast_filter_sink".into(),
+                output_playback: "broadcast_filter_output".into(),
+            },
+            Backend::Maxine => Self {
+                input_capture: "capture.maxine_mic".into(),
+                output_sink: "broadcast_maxine_sink".into(),
+                output_playback: "broadcast_maxine_output".into(),
+            },
+        }
+    }
+
+    pub fn filtered_source_name(&self) -> &str {
+        self.input_capture
+            .strip_prefix("capture.")
+            .unwrap_or(&self.input_capture)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.input_capture.is_empty() || self.output_sink.is_empty() || self.output_playback.is_empty()
+    }
+}
+
 impl Default for NodeNames {
     fn default() -> Self {
-        Self {
-            input_capture: "capture.deepfilter_mic".into(),
-            output_sink: "broadcast_filter_sink".into(),
-            output_playback: default_output_playback(),
-        }
+        Self::for_backend(Backend::DeepFilter)
     }
 }
 
@@ -194,6 +217,35 @@ impl BroadcastState {
         self.preferred_input_source = source_name;
     }
 
+    pub fn set_backend(&mut self, backend: Backend) {
+        self.backend = backend;
+        self.nodes = NodeNames::for_backend(backend);
+    }
+
+    pub fn filtered_source_name(&self) -> &str {
+        self.nodes.filtered_source_name()
+    }
+
+    fn sync_backend_nodes(&mut self) {
+        let deepfilter_nodes = NodeNames::for_backend(Backend::DeepFilter);
+        let maxine_nodes = NodeNames::for_backend(Backend::Maxine);
+
+        if self.nodes.is_empty() {
+            self.nodes = NodeNames::for_backend(self.backend);
+            return;
+        }
+
+        match self.backend {
+            Backend::DeepFilter if self.nodes == maxine_nodes => {
+                self.nodes = deepfilter_nodes;
+            }
+            Backend::Maxine if self.nodes == deepfilter_nodes => {
+                self.nodes = maxine_nodes;
+            }
+            _ => {}
+        }
+    }
+
     /// Remove stale or malformed entries from app_routes:
     /// - empty keys (serialisation artefacts)
     /// - keys ending with " (deleted)" (from old GUI versions)
@@ -203,6 +255,7 @@ impl BroadcastState {
         self.app_routes
             .retain(|k, _| !k.is_empty() && !k.contains("(deleted)"));
         self.maxine_intensity = self.maxine_intensity.clamp(0.0, 1.0);
+        self.sync_backend_nodes();
     }
 }
 
@@ -265,6 +318,15 @@ mod tests {
         assert_eq!(n.input_capture, "capture.deepfilter_mic");
         assert_eq!(n.output_sink, "broadcast_filter_sink");
         assert_eq!(n.output_playback, "broadcast_filter_output");
+    }
+
+    #[test]
+    fn test_node_names_for_maxine_backend() {
+        let n = NodeNames::for_backend(Backend::Maxine);
+        assert_eq!(n.input_capture, "capture.maxine_mic");
+        assert_eq!(n.output_sink, "broadcast_maxine_sink");
+        assert_eq!(n.output_playback, "broadcast_maxine_output");
+        assert_eq!(n.filtered_source_name(), "maxine_mic");
     }
 
     // ── route_for / set_app_route ──────────────────────────────────────
@@ -351,6 +413,18 @@ mod tests {
     }
 
     #[test]
+    fn test_serde_maxine_backend_syncs_legacy_default_nodes() {
+        let mut s: BroadcastState =
+            serde_json::from_str(r#"{"active":true,"default_route":"filtered","backend":"maxine"}"#)
+                .unwrap();
+        s.sanitize();
+        assert_eq!(s.backend, Backend::Maxine);
+        assert_eq!(s.nodes.input_capture, "capture.maxine_mic");
+        assert_eq!(s.nodes.output_sink, "broadcast_maxine_sink");
+        assert_eq!(s.nodes.output_playback, "broadcast_maxine_output");
+    }
+
+    #[test]
     fn test_serde_backward_compat_old_state_file() {
         // Old state files used "master", "input_filter", "output_filter"
         let json = r#"{"master":false,"input_filter":true,"output_filter":false,"default_route":"direct"}"#;
@@ -394,13 +468,24 @@ mod tests {
 
     #[test]
     fn test_backend_serde_roundtrip() {
-        let s = BroadcastState {
-            backend: Backend::Maxine,
-            ..Default::default()
-        };
+        let mut s = BroadcastState::default();
+        s.set_backend(Backend::Maxine);
         let json = serde_json::to_string(&s).unwrap();
         let s2: BroadcastState = serde_json::from_str(&json).unwrap();
         assert_eq!(s2.backend, Backend::Maxine);
+        assert_eq!(s2.nodes.input_capture, "capture.maxine_mic");
+    }
+
+    #[test]
+    fn test_set_backend_updates_nodes() {
+        let mut s = BroadcastState::default();
+        s.set_backend(Backend::Maxine);
+        assert_eq!(s.filtered_source_name(), "maxine_mic");
+        assert_eq!(s.nodes.output_sink, "broadcast_maxine_sink");
+
+        s.set_backend(Backend::DeepFilter);
+        assert_eq!(s.filtered_source_name(), "deepfilter_mic");
+        assert_eq!(s.nodes.output_sink, "broadcast_filter_sink");
     }
 
     // ── sanitize ───────────────────────────────────────────────────────

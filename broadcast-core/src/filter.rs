@@ -183,8 +183,22 @@ pub fn set_filter_active(
     state: &BroadcastState,
     active: bool,
 ) -> Result<()> {
+    #[cfg(not(test))]
+    // Ensure Maxine configs are enabled/disabled when using the Maxine backend.
+    // Enabling/disabling may restart PipeWire, so do this before manipulating node params.
+    {
+        if state.backend == crate::state::Backend::Maxine {
+            crate::pipewire::set_maxine_enabled(active)?;
+        } else {
+            // Best-effort: disable any Maxine configs when not using Maxine
+            let _ = crate::pipewire::set_maxine_enabled(false);
+        }
+    }
+
     let objects = backend.pw_dump()?;
     let attenuation = if active { 100.0 } else { 0.0 };
+    // It's possible the nodes aren't immediately present after a restart; set_attenuation
+    // will silently do nothing if the node isn't found.
     set_attenuation(backend, &objects, &state.nodes.input_capture, attenuation)?;
     set_attenuation(backend, &objects, &state.nodes.output_sink, attenuation)?;
     Ok(())
