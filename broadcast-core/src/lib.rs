@@ -78,9 +78,11 @@ pub fn set_maxine_enabled(enabled: bool) -> Result<()> {
     let (_conf_dir, conf_d, saved) = maxine_paths();
 
     if enabled {
-        std::fs::create_dir_all(&conf_d).map_err(|e| anyhow::anyhow!("failed to create {}: {}", conf_d.display(), e))?;
+        std::fs::create_dir_all(&conf_d)
+            .map_err(|e| anyhow::anyhow!("failed to create {}: {}", conf_d.display(), e))?;
     } else {
-        std::fs::create_dir_all(&saved).map_err(|e| anyhow::anyhow!("failed to create {}: {}", saved.display(), e))?;
+        std::fs::create_dir_all(&saved)
+            .map_err(|e| anyhow::anyhow!("failed to create {}: {}", saved.display(), e))?;
     }
 
     if enabled {
@@ -114,10 +116,18 @@ pub fn set_maxine_enabled(enabled: bool) -> Result<()> {
     }
 
     // Best-effort restart
-    let _ = std::process::Command::new("systemctl").args(["--user", "reset-failed", "pipewire"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire-pulse"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "wireplumber"]).status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "reset-failed", "pipewire"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "pipewire"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "pipewire-pulse"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "wireplumber"])
+        .status();
 
     Ok(())
 }

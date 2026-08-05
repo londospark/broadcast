@@ -391,7 +391,7 @@ fn cmd_set_device(
 /// Derives the playback node name from the capture node name (strips "capture." prefix).
 fn ensure_default_source(backend: &dyn PipeWireBackend, state: &BroadcastState) {
     let source_name = state.filtered_source_name();
-    if let Err(e) = backend.set_default_source(&source_name) {
+    if let Err(e) = backend.set_default_source(source_name) {
         eprintln!("⚠  Could not set default source to '{source_name}': {e}");
     }
     if let Err(e) = write_wireplumber_default_source(source_name) {
@@ -401,8 +401,7 @@ fn ensure_default_source(backend: &dyn PipeWireBackend, state: &BroadcastState) 
 
 fn write_wireplumber_default_source(source_name: &str) -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let conf_dir =
-        std::path::PathBuf::from(&home).join(".config/wireplumber/wireplumber.conf.d");
+    let conf_dir = std::path::PathBuf::from(&home).join(".config/wireplumber/wireplumber.conf.d");
     std::fs::create_dir_all(&conf_dir)?;
     let conf_path = conf_dir.join("50-broadcast-defaults.conf");
     let content = format!(
@@ -459,7 +458,7 @@ fn cmd_fix_routing(backend: &dyn PipeWireBackend) -> Result<()> {
 
     if !health.default_source_correct {
         let source_name = state.filtered_source_name();
-        match backend.set_default_source(&source_name) {
+        match backend.set_default_source(source_name) {
             Ok(()) => {
                 println!("  ✓ Default source set to '{source_name}'");
                 if let Err(e) = write_wireplumber_default_source(source_name) {
@@ -748,7 +747,10 @@ EnvironmentFile=-%h/.config/systemd/user/pipewire-maxine.env
     }
     std::fs::write(&dropin_path, dropin)?;
 
-    println!("  Wrote Maxine PipeWire env helper: {}", script_path.display());
+    println!(
+        "  Wrote Maxine PipeWire env helper: {}",
+        script_path.display()
+    );
     println!("  Wrote PipeWire user drop-in: {}", dropin_path.display());
     let _ = conf_dir;
     Ok(())

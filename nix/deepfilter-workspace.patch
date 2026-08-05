@@ -1,0 +1,15 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1019dbe..df3ee59 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -3,10 +3,7 @@ resolver = "2"
+ 
+ members = [
+   "libDF",
+-  "pyDF",
+-  "pyDF-data",
+   "ladspa",
+-  "demo",
+ ]
+ 
+ [profile.dev]

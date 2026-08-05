@@ -278,10 +278,18 @@ pub fn set_maxine_enabled(enabled: bool) -> Result<()> {
     }
 
     // Best-effort restart
-    let _ = std::process::Command::new("systemctl").args(["--user", "reset-failed", "pipewire"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "pipewire-pulse"]).status();
-    let _ = std::process::Command::new("systemctl").args(["--user", "restart", "wireplumber"]).status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "reset-failed", "pipewire"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "pipewire"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "pipewire-pulse"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "wireplumber"])
+        .status();
 
     Ok(())
 }
