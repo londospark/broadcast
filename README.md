@@ -31,13 +31,11 @@ _Coming soon_
 
 ## Installation
 
-### Arch Linux / CachyOS / Manjaro (AUR)
+### Arch Linux / CachyOS / Manjaro
 
-```sh
-paru -S broadcast-bin   # pre-built binaries
-# or
-paru -S broadcast-git   # build from source
-```
+Not on the AUR yet (`broadcast-bin` there is an unrelated project — don't
+install it expecting this). Use the generic binary or from-source install
+below for now.
 
 ### Ubuntu / Debian / Mint / Pop!_OS (.deb)
 
