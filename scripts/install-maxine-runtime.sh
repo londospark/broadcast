@@ -40,14 +40,16 @@ tag=$(gh release view --repo "$REPO" --json tagName -q .tagName)
 
 info "Downloading Maxine runtime bundle and plugin from $tag..."
 gh release download "$tag" --repo "$REPO" \
-    -p 'broadcast-maxine-runtime-linux-x86_64.tar.gz' \
+    -p 'broadcast-maxine-runtime-linux-x86_64-libs.tar.gz' \
+    -p 'broadcast-maxine-runtime-linux-x86_64-models.tar.gz' \
     -p 'libbroadcast_maxine_ladspa.so' \
     --dir "$tmp_dir" --clobber
 
 sdk_dir="$INSTALL_DIR/bundled-$tag"
 rm -rf "$sdk_dir"
 mkdir -p "$sdk_dir"
-tar xzf "$tmp_dir/broadcast-maxine-runtime-linux-x86_64.tar.gz" -C "$sdk_dir"
+tar xzf "$tmp_dir/broadcast-maxine-runtime-linux-x86_64-libs.tar.gz" -C "$sdk_dir"
+tar xzf "$tmp_dir/broadcast-maxine-runtime-linux-x86_64-models.tar.gz" -C "$sdk_dir"
 ln -sfn "$sdk_dir" "$CURRENT_LINK"
 success "Runtime installed: $CURRENT_LINK → $sdk_dir"
 

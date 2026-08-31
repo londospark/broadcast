@@ -123,7 +123,7 @@ jobs:
       # architectures' models on top.
       - name: Build Maxine runtime bundle for release (optional)
         if: ${{ env.NGC_API_KEY != '' }}
-        run: bash scripts/build-maxine-runtime-bundle.sh release/broadcast-maxine-runtime-linux-x86_64.tar.gz
+        run: bash scripts/build-maxine-runtime-bundle.sh release/broadcast-maxine-runtime-linux-x86_64
 
       - name: Build release binaries
         run: |
@@ -240,7 +240,8 @@ jobs:
             artifacts/linux-binaries/broadcast-gui
             artifacts/linux-binaries/broadcast-x86_64-linux.tar.gz
             artifacts/linux-binaries/libbroadcast_maxine_ladspa.so
-            artifacts/linux-binaries/broadcast-maxine-runtime-linux-x86_64.tar.gz
+            artifacts/linux-binaries/broadcast-maxine-runtime-linux-x86_64-libs.tar.gz
+            artifacts/linux-binaries/broadcast-maxine-runtime-linux-x86_64-models.tar.gz
             artifacts/deb-packages/*.deb
             artifacts/rpm-packages/*.rpm
           generate_release_notes: true
