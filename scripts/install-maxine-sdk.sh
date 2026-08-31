@@ -153,14 +153,26 @@ download_models() {
         [ -n "$gpu_flag" ] && info "Detected GPU SM${sm_ver} → $gpu_flag"
     fi
 
-    info "Downloading denoiser-48k models..."
+    # No usable GPU to probe (e.g. a CI runner) — download_features.sh's own
+    # auto-detection needs a working libcuda/compute_capability probe and
+    # bails *before downloading anything* (headers and libs included, not
+    # just the model) when that's unavailable. Pick an explicit target so
+    # the build still gets real headers/libs to compile and link against;
+    # this only affects which GPU's model+libs get fetched for a *build*
+    # host, not what runs at use time on the end user's own machine.
+    if [ -z "$gpu_flag" ]; then
+        gpu_flag="--gpu rtx_pro_6000"
+        warn "No GPU detected (e.g. CI) — defaulting to $gpu_flag for the build"
+    fi
+
+    info "Downloading denoiser-48k and dereverb_denoiser-48k models..."
     chmod +x "$download_script"
     pushd "$features_dir" > /dev/null
     NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
-        $gpu_flag --effects denoiser-48k \
+        $gpu_flag --effects denoiser-48k,dereverb_denoiser-48k \
         --ngc-org "$NGC_ORG" --ngc-team "$NGC_TEAM" \
     || NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
-        $gpu_flag --effects denoiser-48k \
+        $gpu_flag --effects denoiser-48k,dereverb_denoiser-48k \
     || warn "Model download failed — you can download manually from NGC"
     popd > /dev/null
     success "Models downloaded"
