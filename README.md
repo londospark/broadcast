@@ -37,11 +37,19 @@ The [Omarchy plugin](#omarchy-plugin)'s panel — backend selector, GPU intensit
 
 ## Installation
 
-### Arch Linux / CachyOS / Manjaro
+### Arch Linux / CachyOS / Manjaro (AUR)
 
-Not on the AUR yet (`broadcast-bin` there is an unrelated project — don't
-install it expecting this). Use the generic binary or from-source install
-below for now.
+```sh
+paru -S broadcast-ctl-bin broadcast-gui-bin   # pre-built, no compiling
+# or
+paru -S broadcast-ctl-git broadcast-gui-git   # always builds latest main
+```
+
+- [`broadcast-ctl-bin`](https://aur.archlinux.org/packages/broadcast-ctl-bin) / [`broadcast-gui-bin`](https://aur.archlinux.org/packages/broadcast-gui-bin)
+- [`broadcast-ctl-git`](https://aur.archlinux.org/packages/broadcast-ctl-git) / [`broadcast-gui-git`](https://aur.archlinux.org/packages/broadcast-gui-git)
+
+(`broadcast-bin`, without the `-ctl`/`-gui`, is a different, unrelated
+project on the AUR — don't install that one expecting this.)
 
 ### Ubuntu / Debian / Mint / Pop!_OS (.deb)
 
