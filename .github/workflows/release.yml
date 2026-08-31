@@ -80,6 +80,11 @@ jobs:
   build-deb:
     needs: test
     runs-on: ubuntu-24.04
+    env:
+      # Some Debian/Ubuntu packages (gtk-layer-shell included) install their
+      # .pc file under the plain (non-multiarch-triplet) pkgconfig dir,
+      # which Ubuntu's pkg-config doesn't search by default.
+      PKG_CONFIG_PATH: /usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
     steps:
       - uses: actions/checkout@v7
       - name: Install dependencies
@@ -87,6 +92,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk-layer-shell-dev \
             pkg-config ladspa-sdk
+          echo "-- gtk-layer-shell .pc file(s) --"
+          dpkg -L libgtk-layer-shell-dev | grep pkgconfig || true
+          echo "-- default pkg-config search path --"
+          pkg-config --variable pc_path pkg-config
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deb
