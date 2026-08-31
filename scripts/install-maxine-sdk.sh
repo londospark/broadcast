@@ -62,6 +62,7 @@ install_ngc_cli() {
         -o "$tmp_dir/ngccli_linux.zip"
     unzip -q "$tmp_dir/ngccli_linux.zip" -d "$tmp_dir"
     rm -rf "$NGC_CLI_DIR"
+    mkdir -p "$(dirname "$NGC_CLI_DIR")"
     cp -r "$tmp_dir/ngc-cli" "$NGC_CLI_DIR"
     rm -rf "$tmp_dir"
 
