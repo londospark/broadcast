@@ -781,6 +781,16 @@ set -eu
 SDK_DIR="${NVAFX_SDK:-$HOME/.local/share/nvidia-maxine-sdk/current}"
 ENV_FILE="$HOME/.config/systemd/user/pipewire-maxine.env"
 
+# Auto-detect this GPU's architecture so the plugin picks the matching
+# sm_<N>/ model directory out of a runtime bundle covering several
+# architectures (see install-maxine-runtime.sh), instead of whichever one
+# a plain directory scan happens to find first. A manually-set NVAFX_SM
+# in the environment always wins.
+SM_VALUE="${NVAFX_SM:-}"
+if [ -z "$SM_VALUE" ] && command -v nvidia-smi >/dev/null 2>&1; then
+  SM_VALUE="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || true)"
+fi
+
 append_path() {
   current="$1"
   value="$2"
@@ -817,6 +827,10 @@ fi
 
 if [ -n "$LADSPA_PATH_VALUE" ]; then
   printf '%s\n' "LADSPA_PATH=$LADSPA_PATH_VALUE" >> "$tmpfile"
+fi
+
+if [ -n "$SM_VALUE" ]; then
+  printf '%s\n' "NVAFX_SM=$SM_VALUE" >> "$tmpfile"
 fi
 
 if [ -n "$LD_LIBRARY_PATH_VALUE" ]; then

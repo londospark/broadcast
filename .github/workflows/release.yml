@@ -110,6 +110,16 @@ jobs:
         if: ${{ env.NGC_API_KEY != '' }}
         run: bash scripts/install-maxine-sdk.sh
 
+      # ── Optional: bundle Maxine's runtime (libs + models) for every
+      # desktop RTX generation into the release, so most users can enable
+      # the Maxine backend without their own NGC key — see
+      # scripts/install-maxine-runtime.sh. Reuses the SDK headers/libs the
+      # step above already downloaded, just adds the 3 other
+      # architectures' models on top.
+      - name: Build Maxine runtime bundle for release (optional)
+        if: ${{ env.NGC_API_KEY != '' }}
+        run: bash scripts/build-maxine-runtime-bundle.sh release/broadcast-maxine-runtime-linux-x86_64.tar.gz
+
       - name: Build release binaries
         run: |
           if [ -d "$HOME/.local/share/nvidia-maxine-sdk/current" ]; then
@@ -223,6 +233,7 @@ jobs:
             artifacts/linux-binaries/broadcast-gui
             artifacts/linux-binaries/broadcast-x86_64-linux.tar.gz
             artifacts/linux-binaries/libbroadcast_maxine_ladspa.so
+            artifacts/linux-binaries/broadcast-maxine-runtime-linux-x86_64.tar.gz
             artifacts/deb-packages/*.deb
             artifacts/rpm-packages/*.rpm
           generate_release_notes: true

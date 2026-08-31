@@ -17,13 +17,34 @@ system-wide CUDA Toolkit install is **not** required just to build or run this
 plugin. `cmake` isn't needed either — the crate compiles `src/maxine_ladspa.c`
 directly via Cargo's `cc` crate.
 
-## Build
+## Install (no NGC key needed)
 
-The SDK itself is gated behind an NGC account (free) and can't be scripted
-without a key. `scripts/install-maxine-sdk.sh` (at the repo root) handles the
-rest: it installs the `ngc` CLI, downloads and extracts the SDK + denoiser
-models for your GPU's compute capability, symlinks it to a `current` path, and
-builds this crate against it.
+Every [release](https://github.com/londospark/broadcast/releases) bundles a
+pre-built Maxine runtime (shared libraries + models) covering desktop RTX
+GPUs from Turing through Blackwell — NVIDIA's Maxine SDK license permits
+redistributing these as part of our own application (see
+[Licensing](#licensing) below). Most users don't need their own NGC account:
+
+```bash
+bash scripts/install-maxine-runtime.sh
+```
+
+This downloads the bundle and the compiled plugin from the latest release and
+installs both. `broadcast-ctl` detects your GPU's architecture automatically
+(via `nvidia-smi`) when it writes the PipeWire filter chain config, and the
+plugin picks the matching model at load time — no manual GPU selection
+needed. If your card predates Turing, or isn't a desktop/workstation RTX part
+the bundle covers, use the NGC-key build below instead.
+
+## Build from NVIDIA's SDK directly
+
+Needed only if the bundled runtime above doesn't cover your GPU, or you're
+building the plugin itself for development. The SDK is gated behind an NGC
+account (free) and can't be scripted without a key.
+`scripts/install-maxine-sdk.sh` (at the repo root) handles the rest: it
+installs the `ngc` CLI, downloads and extracts the SDK + denoiser models for
+your GPU's compute capability, symlinks it to a `current` path, and builds
+this crate against it.
 
 ```bash
 # 1. Get a free NGC API key: https://org.ngc.nvidia.com/setup/api-key
@@ -71,10 +92,29 @@ call the same commands.
 
 ## Model files
 
-The `install-maxine-sdk.sh` script downloads the `denoiser-48k` feature
-package matched to your GPU automatically. Models live under the SDK's
-`features/denoiser/` directory; the plugin discovers them relative to
-`NVAFX_SDK` at runtime, no separate `NVAFX_MODEL_DIR` setup needed.
+`install-maxine-sdk.sh` downloads the `denoiser-48k` feature package matched
+to your GPU automatically; the release-bundled runtime
+(`build-maxine-runtime-bundle.sh`) instead fetches all four desktop
+architectures (`t4`, `a10`, `l40`, `rtx_pro_6000` — Turing/Ampere/Ada/
+Blackwell) into the same tree, each under its own `models/sm_<N>/`
+subdirectory. Either way, models live under the SDK's `features/denoiser/`
+directory; the plugin discovers them relative to `NVAFX_SDK` at runtime.
+When several architectures are present, set `NVAFX_SM` (e.g. `NVAFX_SM=86`)
+to pick one explicitly — `broadcast-ctl` sets this automatically from
+`nvidia-smi` when it's not already set, so this normally doesn't need to be
+done by hand.
+
+## Licensing
+
+This plugin's own code is GPL-3.0-or-later, same as the rest of `broadcast`.
+The NVIDIA Maxine SDK components it links against and (optionally) bundles
+are proprietary, under [NVIDIA's own SDK license](https://developer.nvidia.com/downloads/maxine-sdk-license) —
+its distribution supplement permits redistributing any SDK portion other
+than its audio/video data samples, incorporated into our own application,
+which is exactly what `build-maxine-runtime-bundle.sh` and
+`install-maxine-runtime.sh` do. Powered by NVIDIA Maxine™; see NVIDIA's
+[Maxine SDK branding guidelines](https://www.nvidia.com/maxine-sdk-guidelines)
+for attribution requirements before using NVIDIA's marks elsewhere.
 
 ### Effect and model preference
 

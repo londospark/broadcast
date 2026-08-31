@@ -128,6 +128,15 @@ download_sdk() {
 }
 
 # ── Download denoiser models ────────────────────────────────────────────
+# Normally downloads just the one architecture matching this machine's GPU
+# (or a fallback, on a GPU-less CI build host — see below). Set
+# MAXINE_GPU_ARCHES to a space-separated list of --gpu values (e.g.
+# "t4 a10 l40 rtx_pro_6000") to download several architectures into the
+# same tree instead — used by build-maxine-runtime-bundle.sh to produce a
+# redistributable bundle covering more than just the build host's own GPU.
+# download_features.sh downloads each architecture's models into its own
+# features/<effect>/models/sm_<N>/ subdirectory, so repeated calls for
+# different architectures are additive rather than overwriting each other.
 download_models() {
     local sdk_dir="$1"
     local features_dir="$sdk_dir/features"
@@ -137,43 +146,53 @@ download_models() {
         warn "download_features.sh not found — skipping model download"
         return
     fi
+    chmod +x "$download_script"
 
-    # Map nvidia-smi compute capability to GPU flag used by the script
-    local gpu_flag=""
-    if command -v nvidia-smi &>/dev/null; then
-        local sm_ver
-        sm_ver=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || echo "")
-        case "$sm_ver" in
-            120*) gpu_flag="--gpu rtx_pro_6000" ;;  # Blackwell (RTX 5080/5090)
-            89*)  gpu_flag="--gpu l40" ;;            # Ada Lovelace (RTX 4090)
-            86*)  gpu_flag="--gpu a10" ;;            # Ampere (RTX 3090)
-            80*)  gpu_flag="--gpu a100" ;;           # Ampere (A100)
-            75*)  gpu_flag="--gpu t4" ;;             # Turing (RTX 2080)
-        esac
-        [ -n "$gpu_flag" ] && info "Detected GPU SM${sm_ver} → $gpu_flag"
-    fi
+    local gpu_flags=()
+    if [ -n "${MAXINE_GPU_ARCHES:-}" ]; then
+        read -ra gpu_flags <<< "$MAXINE_GPU_ARCHES"
+        info "Downloading models for architectures: ${gpu_flags[*]}"
+    else
+        # Map nvidia-smi compute capability to GPU flag used by the script
+        local gpu_flag=""
+        if command -v nvidia-smi &>/dev/null; then
+            local sm_ver
+            sm_ver=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' || echo "")
+            case "$sm_ver" in
+                120*) gpu_flag="rtx_pro_6000" ;;  # Blackwell (RTX 5080/5090)
+                89*)  gpu_flag="l40" ;;            # Ada Lovelace (RTX 4090)
+                86*)  gpu_flag="a10" ;;            # Ampere (RTX 3090)
+                80*)  gpu_flag="a100" ;;           # Ampere (A100)
+                75*)  gpu_flag="t4" ;;             # Turing (RTX 2080)
+            esac
+            [ -n "$gpu_flag" ] && info "Detected GPU SM${sm_ver} → --gpu $gpu_flag"
+        fi
 
-    # No usable GPU to probe (e.g. a CI runner) — download_features.sh's own
-    # auto-detection needs a working libcuda/compute_capability probe and
-    # bails *before downloading anything* (headers and libs included, not
-    # just the model) when that's unavailable. Pick an explicit target so
-    # the build still gets real headers/libs to compile and link against;
-    # this only affects which GPU's model+libs get fetched for a *build*
-    # host, not what runs at use time on the end user's own machine.
-    if [ -z "$gpu_flag" ]; then
-        gpu_flag="--gpu rtx_pro_6000"
-        warn "No GPU detected (e.g. CI) — defaulting to $gpu_flag for the build"
+        # No usable GPU to probe (e.g. a CI runner) — download_features.sh's
+        # own auto-detection needs a working libcuda/compute_capability probe
+        # and bails *before downloading anything* (headers and libs included,
+        # not just the model) when that's unavailable. Pick an explicit
+        # target so the build still gets real headers/libs to compile and
+        # link against; this only affects which GPU's model+libs get fetched
+        # for a *build* host, not what runs at use time on the end user's
+        # own machine.
+        if [ -z "$gpu_flag" ]; then
+            gpu_flag="rtx_pro_6000"
+            warn "No GPU detected (e.g. CI) — defaulting to --gpu $gpu_flag for the build"
+        fi
+        gpu_flags=("$gpu_flag")
     fi
 
     info "Downloading denoiser-48k and dereverb_denoiser-48k models..."
-    chmod +x "$download_script"
     pushd "$features_dir" > /dev/null
-    NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
-        $gpu_flag --effects denoiser-48k,dereverb_denoiser-48k \
-        --ngc-org "$NGC_ORG" --ngc-team "$NGC_TEAM" \
-    || NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
-        $gpu_flag --effects denoiser-48k,dereverb_denoiser-48k \
-    || warn "Model download failed — you can download manually from NGC"
+    for gpu_flag in "${gpu_flags[@]}"; do
+        NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
+            --gpu "$gpu_flag" --effects denoiser-48k,dereverb_denoiser-48k \
+            --ngc-org "$NGC_ORG" --ngc-team "$NGC_TEAM" \
+        || NGC_API_KEY="$NGC_API_KEY" bash "$download_script" \
+            --gpu "$gpu_flag" --effects denoiser-48k,dereverb_denoiser-48k \
+        || warn "Model download failed for --gpu $gpu_flag — you can download manually from NGC"
+    done
     popd > /dev/null
     success "Models downloaded"
 }
@@ -275,4 +294,8 @@ main() {
     echo ""
 }
 
-main "$@"
+# Sourced (not executed directly) by build-maxine-runtime-bundle.sh to reuse
+# the functions above without also running the single-machine install flow.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

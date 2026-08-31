@@ -25,6 +25,10 @@ _Coming soon_
 - **PipeWire** (with `pactl` / PulseAudio compatibility)
 - **DeepFilterNet LADSPA plugin** — provides the AI noise suppression
   - Arch/CachyOS: `paru -S libdeep_filter_ladspa-git`
+- **NVIDIA Maxine** (optional, GPU-accelerated alternative to DeepFilterNet, RTX
+  20-series or newer) — every release bundles the runtime for you, no NGC
+  account needed: `bash scripts/install-maxine-runtime.sh`. See
+  [broadcast-maxine-ladspa/README.md](broadcast-maxine-ladspa/README.md).
 - **GTK4 + Libadwaita** (for the GUI)
 - **gtk4-layer-shell** (for the `--menu` popup mode — already present on any system running Ironbar)
 - PipeWire filter chain configs (see [examples/](examples/))
