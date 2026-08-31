@@ -1,0 +1,1 @@
+See [AGENTS.md](AGENTS.md) for repo topology, the release process, AUR/plugin/marketplace publishing rules, and the manual steps that need a human — kept as a single file so other AI coding tools share the same source of truth instead of a Claude-specific copy drifting out of sync with it.
