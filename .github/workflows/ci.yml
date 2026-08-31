@@ -22,10 +22,10 @@ jobs:
           pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache cargo registry & build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
