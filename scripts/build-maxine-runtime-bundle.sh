@@ -53,6 +53,13 @@ for rel in nvafx/lib features/denoiser/lib features/dereverb_denoiser/lib extern
     fi
 done
 
+# cuDNN (~430MB uncompressed) isn't in any NEEDED entry of our own libraries
+# or their direct dependencies (verified via readelf -d), and removing it
+# entirely produces identical behavior to leaving it in — same denoiser
+# model loads successfully, same dereverb_denoiser failure either way (a
+# separate, pre-existing NvAFX_CreateEffect issue, not caused by this).
+rm -f "$libs_stage"/external/cuda/lib/libcudnn*
+
 for rel in features/denoiser/models features/dereverb_denoiser/models; do
     if [ -d "$sdk_dir/$rel" ]; then
         mkdir -p "$models_stage/$(dirname "$rel")"
