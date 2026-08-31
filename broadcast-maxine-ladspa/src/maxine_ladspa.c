@@ -16,14 +16,22 @@
  *
  * Environment variables (all optional — auto-detected from NVAFX_SDK when possible):
  *   NVAFX_SDK        Path to Audio_Effects_SDK directory
- *   NVAFX_MODEL_PATH Full path to a specific denoiser_48k*.trtpkg model file
+ *   NVAFX_MODEL_PATH Full path to a specific model .trtpkg file
  *   NVAFX_SM         GPU SM version override, e.g. "120" for RTX 50xx
+ *   NVAFX_EFFECT      "denoiser" (noise only) or "dereverb_denoiser" (noise +
+ *                     room echo removal — closer to NVIDIA Broadcast's
+ *                     Windows defaults). Auto-selects dereverb_denoiser when
+ *                     that feature package was downloaded and its model is
+ *                     found; set to "denoiser" to force plain denoising.
  */
 
 #define _GNU_SOURCE
 #include <ladspa.h>
 #include <nvAudioEffects.h>
 #include <denoiser.h>
+#ifdef NVAFX_HAS_DEREVERB_DENOISER
+#include <dereverb_denoiser.h>
+#endif
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -55,6 +63,16 @@ static void ensure_sdk_global(void) {
     char path[4096];
     snprintf(path, sizeof(path), "%s/external/cuda/lib/libnvinfer_plugin.so.10", sdk);
     dlopen(path, RTLD_GLOBAL | RTLD_LAZY);
+
+#ifdef NVAFX_HAS_DEREVERB_DENOISER
+    /* Re-open with RTLD_GLOBAL even though it's already link-time linked:
+     * a feature .so's self-registration with the core nv_audiofx registry
+     * can depend on static-init ordering that DT_NEEDED linking doesn't
+     * guarantee across sibling libraries. An explicit RTLD_GLOBAL dlopen
+     * forces it fully initialised before NvAFX_CreateEffect runs. */
+    snprintf(path, sizeof(path), "%s/features/dereverb_denoiser/lib/libnv_audiofx_dereverb_denoiser.so", sdk);
+    dlopen(path, RTLD_GLOBAL | RTLD_NOW);
+#endif
 }
 
 /* ── LADSPA port indices ─────────────────────────────────────────────── */
@@ -78,12 +96,32 @@ static pthread_mutex_t g_trt_load_mutex = PTHREAD_MUTEX_INITIALIZER;
  * plus one extra Maxine frame (480), with headroom. 8 × 480 = 3840 samples. */
 #define RING_SIZE (480 * 8)
 
+/* One (model path, effect) pair to try loading. effect_version is 0 (leave
+ * at the SDK default) or a version number to request explicitly via
+ * NVAFX_PARAM_EFFECT_VERSION — required for the "v2" denoiser model to
+ * actually load correctly, per NVIDIA's own effects_demo sample; without
+ * it NvAFX_Load fails even though the v2 .trtpkg file is valid. */
+typedef struct {
+    char path[4096];
+    int  use_dereverb;
+    int  effect_version;
+} ModelCandidate;
+
+#define MAX_CANDIDATES 3
+
 typedef struct {
     NvAFX_Handle    effect;
     NvAFX_Handle    effect_r;   /* right channel for stereo */
     int             is_stereo;
     int             initialized; /* lazy-init guard */
-    char            model_path[4096];
+    /* Ordered, most-preferred-first list of (model, effect) candidates.
+     * activate() tries each in turn — a candidate's model file existing on
+     * disk doesn't guarantee NvAFX_CreateEffect/Load will actually succeed
+     * for it at runtime, so falling through to the next is what keeps a
+     * stream processed instead of silently passing through unfiltered. */
+    ModelCandidate  candidates[MAX_CANDIDATES];
+    int             n_candidates;
+    int             active_candidate; /* index into candidates that loaded, once known */
     LADSPA_Data    *port_in_l;
     LADSPA_Data    *port_in_r;
     LADSPA_Data    *port_out_l;
@@ -112,9 +150,16 @@ typedef struct {
 
 /* ── Model path discovery ─────────────────────────────────────────────
  * Priority:
- *   1. NVAFX_MODEL_PATH env var (full path to .trtpkg)
- *   2. $NVAFX_SDK/features/denoiser/models/sm_$NVAFX_SM/denoiser_48k.trtpkg
- *   3. Walk $NVAFX_SDK/features/denoiser/models/ for any sm_* dir with denoiser_48k.trtpkg
+ *   1. NVAFX_MODEL_PATH env var (full path to .trtpkg) — effect is assumed
+ *      to be plain denoiser in this case, since we can't infer it from a
+ *      path.
+ *   2. dereverb_denoiser, if that feature was linked in at build time and
+ *      NVAFX_EFFECT hasn't forced plain denoiser (see header comment).
+ *   3. Plain denoiser — preferring the "v2" model over the original when
+ *      both are present. v2 is a newer retrain with noticeably better
+ *      suppression of sharp transients (keyboard/mouse clicks) than v1.
+ * Within each effect, searches $NVAFX_SDK/features/<effect>/models/sm_$NVAFX_SM
+ * first, then walks models/ for any sm_* directory.
  */
 static int try_model_path(char *buf, size_t n, const char *dir, const char *file) {
     snprintf(buf, n, "%s/%s", dir, file);
@@ -123,53 +168,106 @@ static int try_model_path(char *buf, size_t n, const char *dir, const char *file
     return 0;
 }
 
-static const char *find_model_path(char *buf, size_t n) {
-    /* 1. Explicit override */
-    const char *explicit = getenv("NVAFX_MODEL_PATH");
-    if (explicit && *explicit) {
-        snprintf(buf, n, "%s", explicit);
-        return buf;
-    }
-
-    const char *sdk = getenv("NVAFX_SDK");
-    if (!sdk || !*sdk) return NULL;
-
+/* Search one effect's models/ tree for the first filename (in preference
+ * order) that exists. Returns 1 and fills buf on success. */
+static int find_effect_model(char *buf, size_t n, const char *sdk,
+                              const char *feature_dir,
+                              const char **filenames, int n_filenames) {
     char models_dir[4096];
-    snprintf(models_dir, sizeof(models_dir), "%s/features/denoiser/models", sdk);
+    snprintf(models_dir, sizeof(models_dir), "%s/features/%s/models", sdk, feature_dir);
 
-    /* 2. Use NVAFX_SM env override */
     const char *sm_override = getenv("NVAFX_SM");
     if (sm_override && *sm_override) {
         char sm_dir[4096];
         snprintf(sm_dir, sizeof(sm_dir), "%s/sm_%s", models_dir, sm_override);
-        if (try_model_path(buf, n, sm_dir, "denoiser_48k.trtpkg")) return buf;
-        /* Try the v2 model as fallback */
-        if (try_model_path(buf, n, sm_dir, "denoiser_v2_48k.trtpkg")) return buf;
+        for (int i = 0; i < n_filenames; i++)
+            if (try_model_path(buf, n, sm_dir, filenames[i])) return 1;
     }
 
-    /* 3. Walk the models directory for any sm_* subdirectory */
     DIR *d = opendir(models_dir);
-    if (!d) {
-        fprintf(stderr, "broadcast-maxine: models dir not found: %s\n", models_dir);
-        return NULL;
-    }
+    if (!d) return 0;
     struct dirent *entry;
-    while ((entry = readdir(d)) != NULL) {
+    int found = 0;
+    while (!found && (entry = readdir(d)) != NULL) {
         if (strncmp(entry->d_name, "sm_", 3) != 0) continue;
         char sm_dir[4096];
         snprintf(sm_dir, sizeof(sm_dir), "%s/%s", models_dir, entry->d_name);
-        if (try_model_path(buf, n, sm_dir, "denoiser_48k.trtpkg")) {
-            closedir(d);
-            return buf;
-        }
-        if (try_model_path(buf, n, sm_dir, "denoiser_v2_48k.trtpkg")) {
-            closedir(d);
-            return buf;
+        for (int i = 0; i < n_filenames; i++) {
+            if (try_model_path(buf, n, sm_dir, filenames[i])) {
+                found = 1;
+                break;
+            }
         }
     }
     closedir(d);
-    fprintf(stderr, "broadcast-maxine: no denoiser_48k.trtpkg found under %s\n", models_dir);
-    return NULL;
+    return found;
+}
+
+/* Builds an ordered, most-preferred-first list of (model, effect)
+ * candidates for activate() to try loading in turn:
+ *   1. NVAFX_MODEL_PATH env var, if set — a single explicit candidate,
+ *      assumed to be a plain denoiser model.
+ *   2. dereverb_denoiser (noise + room echo removal — closer to what
+ *      NVIDIA Broadcast applies by default on Windows), if that feature
+ *      was linked in at build time, its model is present, and NVAFX_EFFECT
+ *      hasn't forced plain denoiser.
+ *   3. Plain denoiser, "v2" model — a newer retrain with noticeably better
+ *      suppression of sharp transients (keyboard/mouse clicks) than v1.
+ *   4. Plain denoiser, original "v1" model.
+ * Every entry a build can find gets a slot; activate() is what actually
+ * discovers which ones the SDK will initialise at runtime and falls
+ * through accordingly, since a model's presence on disk doesn't guarantee
+ * NvAFX_CreateEffect/Load will succeed for it.
+ */
+static int build_candidates(ModelCandidate *out, int max_out) {
+    int count = 0;
+
+    const char *explicit = getenv("NVAFX_MODEL_PATH");
+    if (explicit && *explicit) {
+        snprintf(out[0].path, sizeof(out[0].path), "%s", explicit);
+        out[0].use_dereverb = 0;
+        out[0].effect_version = 0;
+        return 1;
+    }
+
+    const char *sdk = getenv("NVAFX_SDK");
+    if (!sdk || !*sdk) return 0;
+
+#ifdef NVAFX_HAS_DEREVERB_DENOISER
+    const char *effect_env = getenv("NVAFX_EFFECT");
+    int want_dereverb = !(effect_env && strcmp(effect_env, "denoiser") == 0);
+    if (want_dereverb && count < max_out) {
+        static const char *f[] = { "dereverb_denoiser_48k.trtpkg" };
+        if (find_effect_model(out[count].path, sizeof(out[count].path), sdk,
+                               "dereverb_denoiser", f, 1)) {
+            out[count].use_dereverb = 1;
+            out[count].effect_version = 0;
+            count++;
+        }
+    }
+#endif
+
+    if (count < max_out) {
+        static const char *f[] = { "denoiser_v2_48k.trtpkg" };
+        if (find_effect_model(out[count].path, sizeof(out[count].path), sdk, "denoiser", f, 1)) {
+            out[count].use_dereverb = 0;
+            out[count].effect_version = 2; /* requires NVAFX_PARAM_EFFECT_VERSION=2 to load */
+            count++;
+        }
+    }
+    if (count < max_out) {
+        static const char *f[] = { "denoiser_48k.trtpkg" };
+        if (find_effect_model(out[count].path, sizeof(out[count].path), sdk, "denoiser", f, 1)) {
+            out[count].use_dereverb = 0;
+            out[count].effect_version = 0;
+            count++;
+        }
+    }
+
+    if (count == 0) {
+        fprintf(stderr, "broadcast-maxine: no denoiser model found under %s/features/*/models\n", sdk);
+    }
+    return count;
 }
 
 /* ── Ring buffer helpers ──────────────────────────────────────────────
@@ -187,13 +285,20 @@ static void ring_read(float *ring, int rpos, float *dst, int n) {
 }
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
-static NvAFX_Handle create_denoiser(const char *model_path) {
+static NvAFX_Handle create_denoiser(const char *model_path, int use_dereverb, int effect_version) {
     NvAFX_Handle h = NULL;
     NvAFX_Status st;
+    const char *effect_selector = NVAFX_EFFECT_DENOISER;
+
+#ifdef NVAFX_HAS_DEREVERB_DENOISER
+    if (use_dereverb) effect_selector = NVAFX_EFFECT_DEREVERB_DENOISER;
+#else
+    (void)use_dereverb;
+#endif
 
     ensure_sdk_global();
 
-    st = NvAFX_CreateEffect(NVAFX_EFFECT_DENOISER, &h);
+    st = NvAFX_CreateEffect(effect_selector, &h);
     if (st != NVAFX_STATUS_SUCCESS) {
         fprintf(stderr, "broadcast-maxine: NvAFX_CreateEffect failed: %d\n", st);
         return NULL;
@@ -202,6 +307,20 @@ static NvAFX_Handle create_denoiser(const char *model_path) {
     /* SDK v2.x requires sample rate and stream count before NvAFX_Load */
     NvAFX_SetU32(h, NVAFX_PARAM_INPUT_SAMPLE_RATE, 48000);
     NvAFX_SetU32(h, NVAFX_PARAM_NUM_STREAMS, 1);
+
+    /* Required for the "v2" denoiser model specifically — without this the
+     * SDK validates against effect_version 1 (its default) and NvAFX_Load
+     * fails on a v2 .trtpkg even though the file itself is valid. Matches
+     * NVIDIA's own effects_demo sample. */
+    if (effect_version) {
+        st = NvAFX_SetU32(h, NVAFX_PARAM_EFFECT_VERSION, (unsigned)effect_version);
+        if (st != NVAFX_STATUS_SUCCESS) {
+            fprintf(stderr, "broadcast-maxine: NvAFX_SetU32(effect_version=%d) failed: %d\n",
+                    effect_version, st);
+            NvAFX_DestroyEffect(h);
+            return NULL;
+        }
+    }
 
     st = NvAFX_SetString(h, NVAFX_PARAM_MODEL_PATH, model_path);
     if (st != NVAFX_STATUS_SUCCESS) {
@@ -229,20 +348,19 @@ static LADSPA_Handle instantiate(const LADSPA_Descriptor *desc,
 
     inst->is_stereo = (desc->UniqueID == 2);  /* 1 = mono, 2 = stereo */
 
-    char model_buf[4096];
-    const char *model_path = find_model_path(model_buf, sizeof(model_buf));
-    if (!model_path) {
-        fprintf(stderr, "broadcast-maxine: could not locate denoiser model.\n"
-                        "  Set NVAFX_MODEL_PATH=/path/to/denoiser_48k.trtpkg\n"
+    inst->n_candidates = build_candidates(inst->candidates, MAX_CANDIDATES);
+    if (inst->n_candidates == 0) {
+        fprintf(stderr, "broadcast-maxine: could not locate a denoiser model.\n"
+                        "  Set NVAFX_MODEL_PATH=/path/to/model.trtpkg\n"
                         "  or NVAFX_SDK=/path/to/Audio_Effects_SDK\n");
         free(inst);
         return NULL;
     }
-
-    /* Store path for deferred load in activate() */
-    snprintf(inst->model_path, sizeof(inst->model_path), "%s", model_path);
-    fprintf(stderr, "broadcast-maxine: instantiate ok, model will load on activate: %s\n",
-            inst->model_path);
+    fprintf(stderr, "broadcast-maxine: instantiate ok, %d candidate model(s), "
+                    "will load on activate (preferred: %s: %s)\n",
+            inst->n_candidates,
+            inst->candidates[0].use_dereverb ? "dereverb_denoiser" : "denoiser",
+            inst->candidates[0].path);
 
     inst->in_buf_l  = (float *)malloc(NUM_SAMPLES_MONO * sizeof(float));
     inst->out_buf_l = (float *)malloc(NUM_SAMPLES_MONO * sizeof(float));
@@ -266,13 +384,31 @@ static void activate(LADSPA_Handle handle) {
     if (inst->initialized) return;
     inst->initialized = 1;
 
-    fprintf(stderr, "broadcast-maxine: activate — loading model (serialised): %s\n",
-            inst->model_path);
-
     pthread_mutex_lock(&g_trt_load_mutex);
-    inst->effect = create_denoiser(inst->model_path);
-    if (inst->is_stereo && inst->effect) {
-        inst->effect_r = create_denoiser(inst->model_path);
+
+    /* Try each candidate in preference order until one actually loads. A
+     * candidate's model file existing on disk doesn't guarantee
+     * NvAFX_CreateEffect/Load will succeed for it at runtime, so this is
+     * what keeps the stream processed by falling through to the next
+     * (ultimately the proven-working plain denoiser) instead of the
+     * stream running unfiltered. */
+    inst->active_candidate = -1;
+    for (int i = 0; i < inst->n_candidates; i++) {
+        ModelCandidate *c = &inst->candidates[i];
+        fprintf(stderr, "broadcast-maxine: activate — trying candidate %d/%d (%s): %s\n",
+                i + 1, inst->n_candidates, c->use_dereverb ? "dereverb_denoiser" : "denoiser",
+                c->path);
+        inst->effect = create_denoiser(c->path, c->use_dereverb, c->effect_version);
+        if (inst->effect) {
+            inst->active_candidate = i;
+            break;
+        }
+        fprintf(stderr, "broadcast-maxine: candidate %d failed, trying next...\n", i + 1);
+    }
+
+    if (inst->active_candidate >= 0 && inst->is_stereo) {
+        ModelCandidate *c = &inst->candidates[inst->active_candidate];
+        inst->effect_r = create_denoiser(c->path, c->use_dereverb, c->effect_version);
         if (!inst->effect_r) {
             fprintf(stderr, "broadcast-maxine: stereo R channel load failed, "
                             "falling back to mono-duplicated output\n");
@@ -281,11 +417,14 @@ static void activate(LADSPA_Handle handle) {
     }
     pthread_mutex_unlock(&g_trt_load_mutex);
 
-    if (!inst->effect) {
-        fprintf(stderr, "broadcast-maxine: effect load failed — running in passthrough mode\n");
+    if (inst->active_candidate < 0) {
+        fprintf(stderr, "broadcast-maxine: all %d candidate(s) failed — "
+                        "running in passthrough mode\n", inst->n_candidates);
     } else {
-        fprintf(stderr, "broadcast-maxine: effect loaded ok%s\n",
-                inst->is_stereo ? " (stereo)" : " (mono)");
+        ModelCandidate *c = &inst->candidates[inst->active_candidate];
+        fprintf(stderr, "broadcast-maxine: effect loaded ok (%s%s): %s\n",
+                c->use_dereverb ? "dereverb_denoiser" : "denoiser",
+                inst->is_stereo ? ", stereo" : ", mono", c->path);
     }
 }
 

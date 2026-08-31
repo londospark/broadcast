@@ -129,6 +129,23 @@ broadcast-gui --menu                            # popup/flyout (no decorations, 
 broadcast-gui --menu --margin-top 48 --margin-right 10  # custom popup position
 ```
 
+### Omarchy plugin
+
+On [Omarchy](https://omarchy.org), Broadcast ships as a native bar-widget plugin
+(`omarchy-plugin/io.github.londospark.broadcast/`) instead of a floating popup —
+a mic icon in the bar (green/red for filter health) opens a panel with the
+master on/off switch, backend selector (DeepFilterNet/Maxine), GPU intensity
+slider, health status with a one-click "Fix routing", output/input device
+pickers, and per-app filtered/direct toggles.
+
+```sh
+bash scripts/install-omarchy-plugin.sh --enable --put
+```
+
+Re-run that script after pulling changes to sync `omarchy-plugin/` into
+`~/.config/omarchy/plugins/` (Omarchy's validator rejects symlinks inside a
+plugin folder, so it's a real copy, not a live link).
+
 ### Desktop integration
 
 Broadcast works well with Wayland status bars. The `--menu` flag opens the GUI as

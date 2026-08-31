@@ -35,13 +35,35 @@ fn main() {
     let feat_lib = sdk_root.join("features/denoiser/lib");
     let bundled_cuda = sdk_root.join("external/cuda/lib");
 
-    cc::Build::new()
+    // Optional: dereverb_denoiser (denoiser + room echo removal combined) —
+    // closer to what NVIDIA Broadcast applies by default on Windows. Only
+    // compiled in and linked if the feature was downloaded (see
+    // scripts/install-maxine-sdk.sh); the plugin still builds and works
+    // with plain denoiser if not. See maxine_ladspa.c's find_model_path for
+    // the runtime preference/fallback logic this enables.
+    let dereverb_include = sdk_root.join("features/dereverb_denoiser/include");
+    let dereverb_lib = sdk_root.join("features/dereverb_denoiser/lib");
+    let has_dereverb = dereverb_include.join("dereverb_denoiser.h").exists()
+        && dereverb_lib
+            .join("libnv_audiofx_dereverb_denoiser.so")
+            .exists();
+
+    println!("cargo::rustc-check-cfg=cfg(has_dereverb_denoiser)");
+
+    let mut cc_build = cc::Build::new();
+    cc_build
         .file("src/maxine_ladspa.c")
         .include(&core_include)
         .include(&feat_include)
         .flag_if_supported("-Wno-format-truncation")
-        .opt_level(2)
-        .compile("maxine_ladspa_c");
+        .opt_level(2);
+    if has_dereverb {
+        println!("cargo:warning=Also building with dereverb_denoiser (room echo removal)");
+        cc_build
+            .include(&dereverb_include)
+            .define("NVAFX_HAS_DEREVERB_DENOISER", None);
+    }
+    cc_build.compile("maxine_ladspa_c");
 
     // Link SDK shared libs (dynamically — they ship their own TRT/CUDA).
     println!("cargo:rustc-link-search=native={}", core_lib.display());
@@ -49,6 +71,12 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", feat_lib.display());
     println!("cargo:rustc-link-lib=dylib=nv_audiofx_denoiser");
+
+    if has_dereverb {
+        println!("cargo:rustc-link-search=native={}", dereverb_lib.display());
+        println!("cargo:rustc-link-lib=dylib=nv_audiofx_dereverb_denoiser");
+        println!("cargo:rustc-cfg=has_dereverb_denoiser");
+    }
 
     // pthread for serialising concurrent TRT engine loads
     println!("cargo:rustc-link-lib=dylib=pthread");

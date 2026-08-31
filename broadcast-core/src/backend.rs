@@ -13,8 +13,17 @@ pub trait PipeWireBackend {
     fn list_sink_inputs(&self) -> Result<Vec<SinkInput>>;
     /// Get the PulseAudio sink index for a node name.
     fn get_sink_index(&self, node_name: &str) -> Result<Option<u32>>;
-    /// Move a sink-input to a different sink.
-    fn move_sink_input(&self, input_id: u32, sink_id: u32) -> Result<()>;
+    /// Move a sink-input to a different sink, addressed by node.name.
+    ///
+    /// Targeting by name rather than a pre-resolved numeric index matters:
+    /// PipeWire virtual/loopback sinks (like broadcast's own filter sink)
+    /// are not always present in `pactl list sinks`'s enumeration — pactl
+    /// appears to lazily register them there only after they've handled
+    /// some traffic — even though `pactl` can address them by name
+    /// immediately and correctly. Resolving to an index first and moving by
+    /// index would then fail with "sink not found" on a filter sink that
+    /// works fine and genuinely exists.
+    fn move_sink_input(&self, input_id: u32, sink_name: &str) -> Result<()>;
     /// Set a PipeWire node parameter (pw-cli set-param).
     fn set_param(&self, node_id: u64, param_type: &str, param_value: &str) -> Result<()>;
     /// Get the default audio sink name.
@@ -65,18 +74,14 @@ impl PipeWireBackend for RealBackend {
         Ok(pipewire::find_sink_index_in(&sinks, node_name))
     }
 
-    fn move_sink_input(&self, input_id: u32, sink_id: u32) -> Result<()> {
+    fn move_sink_input(&self, input_id: u32, sink_name: &str) -> Result<()> {
         let status = Command::new("pactl")
-            .args([
-                "move-sink-input",
-                &input_id.to_string(),
-                &sink_id.to_string(),
-            ])
+            .args(["move-sink-input", &input_id.to_string(), sink_name])
             .status()
             .context("Failed to run pactl move-sink-input")?;
 
         if !status.success() {
-            anyhow::bail!("pactl move-sink-input failed for input {input_id} → sink {sink_id}");
+            anyhow::bail!("pactl move-sink-input failed for input {input_id} → sink {sink_name}");
         }
         Ok(())
     }

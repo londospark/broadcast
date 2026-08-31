@@ -17,8 +17,8 @@ pub struct MockBackend {
     pub sources: RefCell<Vec<Value>>,
     pub default_sink_name: RefCell<String>,
     pub default_source_name: RefCell<String>,
-    /// Tracks (input_id, sink_id) for each move_sink_input call.
-    pub moved_inputs: RefCell<Vec<(u32, u32)>>,
+    /// Tracks (input_id, sink_name) for each move_sink_input call.
+    pub moved_inputs: RefCell<Vec<(u32, String)>>,
     /// Tracks (node_id, param_type, param_value) for each set_param call.
     pub set_params: RefCell<Vec<(u64, String, String)>>,
     /// Tracks input_ids that were unmuted.
@@ -46,8 +46,10 @@ impl PipeWireBackend for MockBackend {
         Ok(self.sink_indices.borrow().get(node_name).copied())
     }
 
-    fn move_sink_input(&self, input_id: u32, sink_id: u32) -> Result<()> {
-        self.moved_inputs.borrow_mut().push((input_id, sink_id));
+    fn move_sink_input(&self, input_id: u32, sink_name: &str) -> Result<()> {
+        self.moved_inputs
+            .borrow_mut()
+            .push((input_id, sink_name.to_string()));
         Ok(())
     }
 

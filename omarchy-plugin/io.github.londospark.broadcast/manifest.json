@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.londospark.broadcast",
+  "name": "Broadcast",
+  "version": "1.0.0",
+  "author": "londospark",
+  "license": "GPL-3.0-or-later",
+  "description": "AI noise suppression for PipeWire — per-app routing, DeepFilterNet/NVIDIA Maxine backend switching, and filter health at a glance.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Broadcast",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

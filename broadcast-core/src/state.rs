@@ -109,7 +109,9 @@ impl NodeNames {
     }
 
     fn is_empty(&self) -> bool {
-        self.input_capture.is_empty() || self.output_sink.is_empty() || self.output_playback.is_empty()
+        self.input_capture.is_empty()
+            || self.output_sink.is_empty()
+            || self.output_playback.is_empty()
     }
 }
 
@@ -414,9 +416,10 @@ mod tests {
 
     #[test]
     fn test_serde_maxine_backend_syncs_legacy_default_nodes() {
-        let mut s: BroadcastState =
-            serde_json::from_str(r#"{"active":true,"default_route":"filtered","backend":"maxine"}"#)
-                .unwrap();
+        let mut s: BroadcastState = serde_json::from_str(
+            r#"{"active":true,"default_route":"filtered","backend":"maxine"}"#,
+        )
+        .unwrap();
         s.sanitize();
         assert_eq!(s.backend, Backend::Maxine);
         assert_eq!(s.nodes.input_capture, "capture.maxine_mic");

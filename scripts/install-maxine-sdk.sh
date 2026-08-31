@@ -24,9 +24,13 @@ NGC_CLI_VERSION="4.16.0"
 NGC_CLI_DIR="$HOME/.local/share/ngc-cli"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-info()    { echo -e "${BLUE}[info]${NC}  $*"; }
-success() { echo -e "${GREEN}[ok]${NC}    $*"; }
-warn()    { echo -e "${YELLOW}[warn]${NC}  $*"; }
+### All status helpers write to stderr, not stdout. download_sdk() returns
+### its result path via `echo "$sdk_dir"` and is captured with
+### `sdk_dir=$(download_sdk)` — anything these helpers put on stdout would
+### get folded into that captured path and corrupt it.
+info()    { echo -e "${BLUE}[info]${NC}  $*" >&2; }
+success() { echo -e "${GREEN}[ok]${NC}    $*" >&2; }
+warn()    { echo -e "${YELLOW}[warn]${NC}  $*" >&2; }
 error()   { echo -e "${RED}[error]${NC} $*" >&2; }
 
 # ── Preflight ──────────────────────────────────────────────────────────
@@ -54,8 +58,8 @@ install_ngc_cli() {
     info "Downloading ngc CLI ${NGC_CLI_VERSION}..."
     local tmp_dir
     tmp_dir=$(mktemp -d)
-    wget -q "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGC_CLI_VERSION}/files/ngccli_linux.zip" \
-        -O "$tmp_dir/ngccli_linux.zip"
+    curl -fsSL "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/${NGC_CLI_VERSION}/files/ngccli_linux.zip" \
+        -o "$tmp_dir/ngccli_linux.zip"
     unzip -q "$tmp_dir/ngccli_linux.zip" -d "$tmp_dir"
     rm -rf "$NGC_CLI_DIR"
     cp -r "$tmp_dir/ngc-cli" "$NGC_CLI_DIR"
@@ -90,10 +94,13 @@ download_sdk() {
     fi
 
     info "Downloading Maxine Audio Effects SDK v${SDK_VERSION}..."
+    # ngc's own progress bar writes to stdout; redirect it to stderr for the
+    # same reason the status helpers above do — this function's stdout is
+    # captured by the caller.
     ngc registry resource download-version \
         --org "$NGC_ORG" --team "$NGC_TEAM" \
         --dest "$INSTALL_DIR" \
-        "${NGC_ORG}/${NGC_TEAM}/${SDK_RESOURCE}:${SDK_VERSION}"
+        "${NGC_ORG}/${NGC_TEAM}/${SDK_RESOURCE}:${SDK_VERSION}" >&2
 
     # The download lands a .tar.gz — find and extract it
     local tarball
@@ -169,7 +176,10 @@ setup_symlink() {
 update_fish_config() {
     local fish_cfg="$HOME/dotfiles/fish/.config/fish/config.fish"
     [ -f "$fish_cfg" ] || fish_cfg="$HOME/.config/fish/config.fish"
-    [ -f "$fish_cfg" ] || return
+    # No fish config on this system (e.g. bash/zsh users) — nothing to do.
+    # `return` alone would propagate the failed test's exit status and, under
+    # `set -e`, silently kill the whole script here.
+    [ -f "$fish_cfg" ] || return 0
 
     # Set NVAFX_SDK if not already present
     if ! grep -q "NVAFX_SDK" "$fish_cfg" 2>/dev/null; then

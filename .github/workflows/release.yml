@@ -31,33 +31,27 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa \
-            cuda python python-pip
+            curl unzip
       - uses: actions/checkout@v4
 
-      # ── Optional: download Maxine SDK and build GPU plugin ─────────────
-      # Set NGC_API_KEY as a GitHub Actions secret to enable Maxine builds.
-      - name: Download NVIDIA Maxine SDK (optional)
+      # ── Optional: download Maxine SDK and build the GPU plugin ─────────
+      # Set NGC_API_KEY as a GitHub Actions secret to enable Maxine builds
+      # (free key: https://org.ngc.nvidia.com/setup/api-key). Uses the same
+      # script a developer runs locally — see broadcast-maxine-ladspa/README.md.
+      # No system CUDA/cmake needed: the SDK bundles its own CUDA/TensorRT,
+      # and the plugin builds via Cargo's `cc` crate directly.
+      - name: Download NVIDIA Maxine SDK and build GPU plugin (optional)
         if: ${{ secrets.NGC_API_KEY != '' }}
         env:
           NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
-        run: |
-          pip install --quiet ngc-cli
-          mkdir -p $HOME/.local/share/nvidia-maxine-sdk
-          ngc registry resource download-version \
-            --dest $HOME/.local/share/nvidia-maxine-sdk \
-            "nvidia/maxine/maxine_linux_audio_effects_sdk:latest" || true
-          SDK_DIR=$(find $HOME/.local/share/nvidia-maxine-sdk -maxdepth 2 -name "nvAFX.h" \
-            -exec dirname {} \; 2>/dev/null | xargs dirname | head -1 || true)
-          if [ -n "$SDK_DIR" ]; then
-            ln -sfn "$SDK_DIR" $HOME/.local/share/nvidia-maxine-sdk/current
-            echo "NVAFX_SDK=$HOME/.local/share/nvidia-maxine-sdk/current" >> $GITHUB_ENV
-            echo "Maxine SDK ready at $SDK_DIR"
-          else
-            echo "SDK download succeeded but nvAFX.h not found — skipping Maxine build"
-          fi
+        run: bash scripts/install-maxine-sdk.sh
 
       - name: Build release binaries
-        run: cargo build --release
+        run: |
+          if [ -d "$HOME/.local/share/nvidia-maxine-sdk/current" ]; then
+            export NVAFX_SDK="$HOME/.local/share/nvidia-maxine-sdk/current"
+          fi
+          cargo build --release
 
       - name: Prepare assets
         run: |

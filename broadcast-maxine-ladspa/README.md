@@ -7,37 +7,50 @@ LADSPA wrapper around the [NVIDIA Maxine Audio Effects SDK](https://developer.nv
 | Requirement | Install (CachyOS/Arch) |
 |-------------|----------------------|
 | RTX GPU (20xx+) | — |
-| NVIDIA driver ≥ 520 | `pacman -S nvidia` |
-| CUDA Toolkit | `pacman -S cuda` |
+| NVIDIA driver ≥ 570 | `pacman -S nvidia-open-dkms nvidia-utils` (or `nvidia-dkms` on non-open kernels) |
 | LADSPA headers | `pacman -S ladspa` |
-| CMake ≥ 3.20 | `pacman -S cmake` |
-| NVIDIA Maxine AFX SDK | Download below |
+| Rust toolchain | `mise use -g rust@latest` (or `rustup`) |
+| A free NGC API key | https://org.ngc.nvidia.com/setup/api-key |
 
-### Get the Maxine SDK
-
-1. Go to https://developer.nvidia.com/nvidia-audio-effects-sdk
-2. Accept the licence and download the Linux package
-3. Extract to e.g. `~/nvidia-maxine-sdk`
+The SDK ships its own bundled CUDA/TensorRT/cuDNN under `external/cuda/`, so a
+system-wide CUDA Toolkit install is **not** required just to build or run this
+plugin. `cmake` isn't needed either — the crate compiles `src/maxine_ladspa.c`
+directly via Cargo's `cc` crate.
 
 ## Build
 
+The SDK itself is gated behind an NGC account (free) and can't be scripted
+without a key. `scripts/install-maxine-sdk.sh` (at the repo root) handles the
+rest: it installs the `ngc` CLI, downloads and extracts the SDK + denoiser
+models for your GPU's compute capability, symlinks it to a `current` path, and
+builds this crate against it.
+
 ```bash
-cd broadcast-maxine-ladspa
-mkdir build && cd build
-cmake .. -DNVAFX_SDK=$HOME/nvidia-maxine-sdk -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install   # installs to /usr/local/lib/ladspa/maxine_ladspa.so
+# 1. Get a free NGC API key: https://org.ngc.nvidia.com/setup/api-key
+#    (also accept the SDK's license by opening its resource page once while
+#    logged in: https://catalog.ngc.nvidia.com/orgs/nvidia/teams/maxine/resources/maxine_linux_audio_effects_sdk)
+cd broadcast
+NGC_API_KEY="your_key_here" bash scripts/install-maxine-sdk.sh
 ```
 
-Or install to user path:
+This installs the SDK to `~/.local/share/nvidia-maxine-sdk/current` and the
+built plugin to `~/.local/lib/ladspa/libmaxine_ladspa.so`.
+
+### Manual build
+
+If the SDK is already unpacked somewhere (e.g. `~/.local/share/nvidia-maxine-sdk/current`,
+with `nvafx/include/nvAudioEffects.h` inside it):
+
 ```bash
-cmake .. -DNVAFX_SDK=$HOME/nvidia-maxine-sdk \
-         -DCMAKE_INSTALL_PREFIX=$HOME/.local \
-         -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc) && make install
-# Add ~/.local/lib/ladspa to LADSPA_PATH:
-# export LADSPA_PATH=$HOME/.local/lib/ladspa:/usr/lib/ladspa
+cd broadcast
+NVAFX_SDK=~/.local/share/nvidia-maxine-sdk/current cargo build --release -p broadcast-maxine-ladspa
+cp target/release/libbroadcast_maxine_ladspa.so ~/.local/lib/ladspa/libmaxine_ladspa.so
 ```
+
+`build.rs` also auto-detects the SDK at that default path with no `NVAFX_SDK`
+set, so a plain `cargo build --release` picks it up once installed. If the
+SDK isn't found, this crate builds an empty stub with a warning rather than
+failing the workspace build.
 
 ## Enable in broadcast
 
@@ -53,20 +66,35 @@ broadcast-ctl set-backend deepfilter
 broadcast-ctl install-config --apply
 ```
 
+Or use the Backend selector in `broadcast-gui` or the Omarchy panel — both
+call the same commands.
+
 ## Model files
 
-By default the plugin looks for model files at `/usr/share/nvafx/models`.
-Override with the `NVAFX_MODEL_DIR` environment variable:
-```bash
-export NVAFX_MODEL_DIR=/path/to/models
-```
+The `install-maxine-sdk.sh` script downloads the `denoiser-48k` feature
+package matched to your GPU automatically. Models live under the SDK's
+`features/denoiser/` directory; the plugin discovers them relative to
+`NVAFX_SDK` at runtime, no separate `NVAFX_MODEL_DIR` setup needed.
 
-The model files ship inside the SDK download under `models/`.
-Copy them to the expected location:
-```bash
-sudo mkdir -p /usr/share/nvafx/models
-sudo cp ~/nvidia-maxine-sdk/models/* /usr/share/nvafx/models/
-```
+### Effect and model preference
+
+At runtime the plugin tries, in order, the best effect/model it can find and
+actually get the SDK to load:
+
+1. **`dereverb_denoiser`** (noise + room echo removal combined — closer to
+   NVIDIA Broadcast's Windows defaults) if that feature package was also
+   downloaded (`download_features.sh --effects dereverb_denoiser-48k`).
+2. **Denoiser "v2"** model (`denoiser_v2_48k.trtpkg`) — a newer retrain with
+   noticeably better suppression of sharp transients (keyboard/mouse
+   clicks) than the original.
+3. **Denoiser "v1"** (`denoiser_48k.trtpkg`) — the original model, as a
+   last resort.
+
+A candidate's model file existing on disk doesn't guarantee the SDK will
+actually initialise it (this varies by SDK/GPU generation); the plugin logs
+which one it ends up running via `journalctl --user -u pipewire | grep
+broadcast-maxine`. Set `NVAFX_EFFECT=denoiser` to skip `dereverb_denoiser`
+even when present.
 
 ## LADSPA labels
 

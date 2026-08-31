@@ -419,7 +419,7 @@ impl BroadcastWindow {
                 }
                 // Set default source to the clean filtered mic
                 let source = state.filtered_source_name();
-                if let Err(e) = backend.set_default_source(&source) {
+                if let Err(e) = backend.set_default_source(source) {
                     win.show_toast(&format!("Could not set default source: {e}"));
                 }
             } else if let Err(e) = routing::bypass_all(&backend, &state) {
@@ -568,7 +568,7 @@ impl BroadcastWindow {
             let state = win.imp().state.borrow();
             let source = state.filtered_source_name();
             if !health.default_source_correct {
-                if let Err(e) = backend.set_default_source(&source) {
+                if let Err(e) = backend.set_default_source(source) {
                     win.show_toast(&format!("Could not set default source: {e}"));
                 }
             }

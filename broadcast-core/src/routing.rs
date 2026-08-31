@@ -4,14 +4,16 @@ use crate::backend::PipeWireBackend;
 use crate::pipewire;
 use crate::state::{AppRoute, BroadcastState};
 
-/// Pure function: find the default hardware sink index from a list of sinks,
-/// skipping broadcast filter sinks and virtual sinks.
+/// Pure function: find the default hardware sink's node.name from a list of
+/// sinks, skipping broadcast filter sinks and virtual sinks.
 /// If `preferred` is set and found, use it; otherwise fall back to first hardware sink.
-pub fn find_default_sink_index(
+///
+/// Returns a name rather than a numeric index — see `move_sink_input` for why.
+pub fn find_default_sink_name(
     sinks: &[serde_json::Value],
     filter_sink_name: &str,
     preferred: Option<&str>,
-) -> Result<u32> {
+) -> Result<String> {
     // If a preferred sink is specified, try to find it first
     if let Some(preferred_name) = preferred {
         for sink in sinks {
@@ -21,9 +23,7 @@ pub fn find_default_sink_index(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if name == preferred_name {
-                if let Some(idx) = sink.get("index").and_then(|v| v.as_u64()) {
-                    return Ok(idx as u32);
-                }
+                return Ok(name.to_string());
             }
         }
         // Preferred not found — fall through to auto-detect
@@ -35,6 +35,9 @@ pub fn find_default_sink_index(
             .and_then(|p| p.get("node.name"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
         // Skip any sink that is part of our filter chain
         if name == filter_sink_name || pipewire::is_broadcast_virtual_sink(name) {
             continue;
@@ -44,9 +47,7 @@ pub fn find_default_sink_index(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if media_class.is_empty() || !media_class.contains("Virtual") {
-            if let Some(idx) = sink.get("index").and_then(|v| v.as_u64()) {
-                return Ok(idx as u32);
-            }
+            return Ok(name.to_string());
         }
     }
     anyhow::bail!("Could not find default hardware sink")
@@ -60,21 +61,20 @@ pub fn route_app(
     route: AppRoute,
 ) -> Result<u32> {
     let inputs = backend.list_sink_inputs()?;
-    let broadcast_idx = backend.get_sink_index(&state.nodes.output_sink)?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(
+    let default_name = find_default_sink_name(
         &sinks,
         &state.nodes.output_sink,
         state.preferred_output_sink.as_deref(),
     )?;
     let mut routed = 0u32;
 
-    let target = match route {
-        AppRoute::Filtered => match broadcast_idx {
-            Some(idx) => idx,
-            None => anyhow::bail!("Broadcast filter sink not found"),
-        },
-        AppRoute::Direct => default_idx,
+    // The filter sink's own name is always the routing target for
+    // "Filtered" — no need to resolve it through `list_sinks` first (it may
+    // not be enumerated there yet; see `move_sink_input`).
+    let target: &str = match route {
+        AppRoute::Filtered => &state.nodes.output_sink,
+        AppRoute::Direct => &default_name,
     };
 
     let app_lower = app_name.to_lowercase();
@@ -93,9 +93,8 @@ pub fn route_app(
 /// The filter chain's own output is always routed to the preferred hardware sink.
 pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Result<()> {
     let inputs = backend.list_sink_inputs()?;
-    let broadcast_idx = backend.get_sink_index(&state.nodes.output_sink)?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(
+    let default_name = find_default_sink_name(
         &sinks,
         &state.nodes.output_sink,
         state.preferred_output_sink.as_deref(),
@@ -106,7 +105,7 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
         // hardware sink — never route it back into the filter (loop).
         // Also ensure it's unmuted (WirePlumber stream-restore may mute it).
         if input.node_name == state.nodes.output_playback {
-            let _ = backend.move_sink_input(input.id, default_idx);
+            let _ = backend.move_sink_input(input.id, &default_name);
             let _ = backend.ensure_sink_input_unmuted(input.id);
             continue;
         }
@@ -123,12 +122,9 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
             .copied()
             .unwrap_or(state.default_route);
 
-        let target = match route {
-            AppRoute::Filtered => match broadcast_idx {
-                Some(idx) => idx,
-                None => continue,
-            },
-            AppRoute::Direct => default_idx,
+        let target: &str = match route {
+            AppRoute::Filtered => &state.nodes.output_sink,
+            AppRoute::Direct => &default_name,
         };
 
         let _ = backend.move_sink_input(input.id, target);
@@ -136,18 +132,54 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
     Ok(())
 }
 
+/// Route a single audio stream, identified by its PipeWire sink-input id,
+/// independently of any other stream from the same app.
+///
+/// Some apps — most notably Chromium-based browsers — run every window/tab's
+/// audio through one shared process and never expose which stream belongs to
+/// which tab or window, so PipeWire (and `route_app`, which matches on
+/// app/client name) can only ever see them as indistinguishable copies of the
+/// same app. Each one is still a distinct sink-input id, though, so routing
+/// by id lets a specific stream be moved without touching its siblings.
+///
+/// Unlike `route_app`, this is not persisted to `app_routes` — there's no
+/// stable name to persist against, since the id is only valid for the
+/// lifetime of that particular stream (it changes on tab reload, replay,
+/// etc). `apply_routes` will fall back to the app-level default the next
+/// time it runs.
+pub fn route_stream_id(
+    backend: &dyn PipeWireBackend,
+    state: &BroadcastState,
+    stream_id: u32,
+    route: AppRoute,
+) -> Result<()> {
+    let sinks = backend.list_sinks()?;
+    let default_name = find_default_sink_name(
+        &sinks,
+        &state.nodes.output_sink,
+        state.preferred_output_sink.as_deref(),
+    )?;
+
+    let target: &str = match route {
+        AppRoute::Filtered => &state.nodes.output_sink,
+        AppRoute::Direct => &default_name,
+    };
+
+    backend.move_sink_input(stream_id, target)
+}
+
 /// Move all audio streams to the default (real) speaker sink, bypassing filtering.
 pub fn bypass_all(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Result<()> {
     let inputs = backend.list_sink_inputs()?;
     let sinks = backend.list_sinks()?;
-    let default_idx = find_default_sink_index(
+    let default_name = find_default_sink_name(
         &sinks,
         &state.nodes.output_sink,
         state.preferred_output_sink.as_deref(),
     )?;
 
     for input in &inputs {
-        let _ = backend.move_sink_input(input.id, default_idx);
+        let _ = backend.move_sink_input(input.id, &default_name);
     }
     Ok(())
 }
@@ -269,38 +301,42 @@ mod tests {
         b
     }
 
-    // ── find_default_sink_index ────────────────────────────────────────
+    const HW: &str = "alsa_output.pci-0000_00_1f.3.analog-stereo";
+    const FILTER: &str = "broadcast_filter_sink";
+    const HW2: &str = "alsa_output.pci-0000_0c_00.4.analog-stereo";
+
+    // ── find_default_sink_name ────────────────────────────────────────
 
     #[test]
-    fn test_find_default_sink_index_basic() {
+    fn test_find_default_sink_name_basic() {
         let sinks = vec![hw_sink(), filter_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
-        assert_eq!(idx, 5);
+        let name = find_default_sink_name(&sinks, FILTER, None).unwrap();
+        assert_eq!(name, HW);
     }
 
     #[test]
-    fn test_find_default_sink_index_skips_filter() {
+    fn test_find_default_sink_name_skips_filter() {
         // Filter sink listed first; should be skipped
         let sinks = vec![filter_sink(), hw_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
-        assert_eq!(idx, 5);
+        let name = find_default_sink_name(&sinks, FILTER, None).unwrap();
+        assert_eq!(name, HW);
     }
 
     #[test]
-    fn test_find_default_sink_index_skips_virtual() {
+    fn test_find_default_sink_name_skips_virtual() {
         let sinks = vec![virtual_sink(), filter_sink(), hw_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
-        assert_eq!(idx, 5);
+        let name = find_default_sink_name(&sinks, FILTER, None).unwrap();
+        assert_eq!(name, HW);
     }
 
     #[test]
-    fn test_find_default_sink_index_no_sinks() {
+    fn test_find_default_sink_name_no_sinks() {
         let sinks: Vec<serde_json::Value> = vec![];
-        assert!(find_default_sink_index(&sinks, "broadcast_filter_sink", None).is_err());
+        assert!(find_default_sink_name(&sinks, FILTER, None).is_err());
     }
 
     #[test]
-    fn test_find_default_sink_index_skips_maxine_filter_sink_too() {
+    fn test_find_default_sink_name_skips_maxine_filter_sink_too() {
         let maxine_sink = json!({
             "index": 14,
             "properties": {
@@ -309,38 +345,31 @@ mod tests {
             }
         });
         let sinks = vec![maxine_sink, hw_sink()];
-        let idx = find_default_sink_index(&sinks, "broadcast_filter_sink", None).unwrap();
-        assert_eq!(idx, 5);
+        let name = find_default_sink_name(&sinks, FILTER, None).unwrap();
+        assert_eq!(name, HW);
     }
 
     #[test]
-    fn test_find_default_sink_index_preferred() {
+    fn test_find_default_sink_name_preferred() {
         let second_hw_sink = json!({
             "index": 10,
             "properties": {
-                "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                "node.name": HW2,
                 "media.class": "Audio/Sink"
             }
         });
         let sinks = vec![hw_sink(), filter_sink(), second_hw_sink];
         // With preferred set, should pick the preferred sink even though it's not first
-        let idx = find_default_sink_index(
-            &sinks,
-            "broadcast_filter_sink",
-            Some("alsa_output.pci-0000_0c_00.4.analog-stereo"),
-        )
-        .unwrap();
-        assert_eq!(idx, 10);
+        let name = find_default_sink_name(&sinks, FILTER, Some(HW2)).unwrap();
+        assert_eq!(name, HW2);
     }
 
     #[test]
-    fn test_find_default_sink_index_preferred_not_found_falls_back() {
+    fn test_find_default_sink_name_preferred_not_found_falls_back() {
         let sinks = vec![hw_sink(), filter_sink()];
         // Preferred sink doesn't exist — should fall back to first hardware sink
-        let idx =
-            find_default_sink_index(&sinks, "broadcast_filter_sink", Some("nonexistent_sink"))
-                .unwrap();
-        assert_eq!(idx, 5);
+        let name = find_default_sink_name(&sinks, FILTER, Some("nonexistent_sink")).unwrap();
+        assert_eq!(name, HW);
     }
 
     // ── route_app ──────────────────────────────────────────────────────
@@ -359,7 +388,7 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0], (100, 8)); // moved to filter sink index 8
+        assert_eq!(moved[0], (100, FILTER.to_string())); // moved to the filter sink, by name
     }
 
     #[test]
@@ -373,7 +402,7 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0], (100, 5)); // moved to hw sink index 5
+        assert_eq!(moved[0], (100, HW.to_string())); // moved to the hw sink, by name
     }
 
     #[test]
@@ -385,6 +414,37 @@ mod tests {
         let routed = route_app(&backend, &state, "firefox", AppRoute::Filtered).unwrap();
         assert_eq!(routed, 0);
         assert!(backend.moved_inputs.borrow().is_empty());
+    }
+
+    // ── route_stream_id ───────────────────────────────────────────────
+
+    #[test]
+    fn test_route_stream_id_filtered() {
+        // Two indistinguishable streams from the same app (e.g. two browser
+        // windows) — only the targeted id should move.
+        let inputs = vec![
+            make_input(100, 5, "brave", "Brave", "Playback"),
+            make_input(101, 5, "brave", "Brave", "Playback"),
+        ];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        route_stream_id(&backend, &state, 101, AppRoute::Filtered).unwrap();
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(*moved, vec![(101, FILTER.to_string())]); // only 101 moved
+    }
+
+    #[test]
+    fn test_route_stream_id_direct() {
+        let inputs = vec![make_input(100, 8, "brave", "Brave", "Playback")];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        route_stream_id(&backend, &state, 100, AppRoute::Direct).unwrap();
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(*moved, vec![(100, HW.to_string())]); // moved to the hw sink
     }
 
     // ── apply_routes ───────────────────────────────────────────────────
@@ -404,9 +464,9 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 2);
-        // brave → filter sink (8), spotify → hw sink (5)
-        assert_eq!(moved[0], (100, 8));
-        assert_eq!(moved[1], (101, 5));
+        // brave → filter sink, spotify → hw sink
+        assert_eq!(moved[0], (100, FILTER.to_string()));
+        assert_eq!(moved[1], (101, HW.to_string()));
     }
 
     // ── filter chain output routing ────────────────────────────────────
@@ -425,9 +485,9 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 2);
-        // filter output → hw sink (5), brave → filter sink (8)
-        assert_eq!(moved[0], (43, 5));
-        assert_eq!(moved[1], (100, 8));
+        // filter output → hw sink, brave → filter sink
+        assert_eq!(moved[0], (43, HW.to_string()));
+        assert_eq!(moved[1], (100, FILTER.to_string()));
         // filter output should be unmuted
         let unmuted = backend.unmuted_inputs.borrow();
         assert_eq!(unmuted.len(), 1);
@@ -447,7 +507,7 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0], (43, 5)); // hw sink, NOT filter sink
+        assert_eq!(moved[0], (43, HW.to_string())); // hw sink, NOT filter sink
     }
 
     #[test]
@@ -455,7 +515,7 @@ mod tests {
         let second_hw = json!({
             "index": 10,
             "properties": {
-                "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                "node.name": HW2,
                 "media.class": "Audio/Sink"
             }
         });
@@ -468,13 +528,13 @@ mod tests {
         *b.sinks.borrow_mut() = vec![hw_sink(), filter_sink(), second_hw];
 
         let mut state = default_state();
-        state.set_preferred_output_sink(Some("alsa_output.pci-0000_0c_00.4.analog-stereo".into()));
+        state.set_preferred_output_sink(Some(HW2.into()));
 
         apply_routes(&b, &state).unwrap();
 
         let moved = b.moved_inputs.borrow();
         assert_eq!(moved.len(), 1);
-        assert_eq!(moved[0], (43, 10)); // preferred sink
+        assert_eq!(moved[0], (43, HW2.to_string())); // preferred sink
     }
 
     #[test]
@@ -506,9 +566,9 @@ mod tests {
 
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 2);
-        // Both moved to hw sink (5)
-        assert_eq!(moved[0], (100, 5));
-        assert_eq!(moved[1], (101, 5));
+        // Both moved to the hw sink
+        assert_eq!(moved[0], (100, HW.to_string()));
+        assert_eq!(moved[1], (101, HW.to_string()));
     }
 
     // ── list_apps ──────────────────────────────────────────────────────

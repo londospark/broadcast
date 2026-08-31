@@ -40,13 +40,32 @@ enum Commands {
         /// Route mode: filtered or direct
         mode: String,
     },
+    /// Route a single audio stream by id, independently of other streams
+    /// from the same app (see 'apps --json' for ids). Useful for apps like
+    /// browsers that run every window/tab through one shared audio process
+    /// PipeWire can't otherwise tell apart. Not persisted — 'apply' falls
+    /// back to the app-level default the next time it runs.
+    RouteId {
+        /// Stream id, from 'broadcast-ctl apps' or 'apps --json'
+        id: u32,
+        /// Route mode: filtered or direct
+        mode: String,
+    },
     /// List running audio apps and their routing
-    Apps,
+    Apps {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Apply saved routing preferences to all running streams,
     /// and ensure the default source is the clean mic
     Apply,
     /// List available audio devices
-    Devices,
+    Devices {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Set preferred audio device
     SetDevice {
         /// Device type: "output" (sink/speakers) or "input" (source/mic)
@@ -69,6 +88,11 @@ enum Commands {
         #[arg(long)]
         apply: bool,
     },
+    /// Set the Maxine backend denoising intensity (0-100)
+    SetIntensity {
+        /// Intensity percentage, 0 (off) to 100 (maximum)
+        percent: f32,
+    },
 }
 
 fn main() -> Result<()> {
@@ -81,9 +105,10 @@ fn main() -> Result<()> {
         Commands::Off => cmd_set(&backend, false)?,
         Commands::Status { ironbar, json } => cmd_status(&backend, ironbar, json)?,
         Commands::Route { app, mode } => cmd_route(&backend, &app, &mode)?,
-        Commands::Apps => cmd_apps(&backend)?,
+        Commands::RouteId { id, mode } => cmd_route_id(&backend, id, &mode)?,
+        Commands::Apps { json } => cmd_apps(&backend, json)?,
         Commands::Apply => cmd_apply(&backend)?,
-        Commands::Devices => cmd_devices(&backend)?,
+        Commands::Devices { json } => cmd_devices(&backend, json)?,
         Commands::SetDevice {
             device_type,
             device_name,
@@ -92,6 +117,7 @@ fn main() -> Result<()> {
         Commands::InstallService => cmd_install_service()?,
         Commands::SetBackend { backend: name } => cmd_set_backend(&backend, &name)?,
         Commands::InstallConfig { apply } => cmd_install_config(apply)?,
+        Commands::SetIntensity { percent } => cmd_set_intensity(percent)?,
     }
     Ok(())
 }
@@ -160,6 +186,8 @@ fn cmd_status(backend: &dyn PipeWireBackend, ironbar: bool, json: bool) -> Resul
             "health": if health.is_ok() { "ok" } else { "degraded" },
             "issues": health.issues,
             "default_route": state.default_route,
+            "maxine_intensity": state.maxine_intensity,
+            "maxine_available": broadcast_core::is_maxine_available(),
             "app_routes": state.app_routes,
             "preferred_output_sink": state.preferred_output_sink,
             "preferred_input_source": state.preferred_input_source,
@@ -232,9 +260,41 @@ fn cmd_route(backend: &dyn PipeWireBackend, app: &str, mode: &str) -> Result<()>
     Ok(())
 }
 
-fn cmd_apps(backend: &dyn PipeWireBackend) -> Result<()> {
+fn cmd_route_id(backend: &dyn PipeWireBackend, id: u32, mode: &str) -> Result<()> {
+    let route: broadcast_core::state::AppRoute = mode.parse()?;
+    let state = BroadcastState::load()?;
+
+    if !state.active {
+        eprintln!("Broadcast is OFF — not routing");
+        return Ok(());
+    }
+
+    routing::route_stream_id(backend, &state, id, route)?;
+    eprintln!("Routed stream {id} → {route}");
+    Ok(())
+}
+
+fn cmd_apps(backend: &dyn PipeWireBackend, json: bool) -> Result<()> {
     let state = BroadcastState::load()?;
     let apps = routing::list_apps(backend, &state)?;
+
+    if json {
+        let out: Vec<serde_json::Value> = apps
+            .iter()
+            .map(|app| {
+                serde_json::json!({
+                    "id": app.id,
+                    "name": if !app.name.is_empty() { &app.name } else { &app.binary },
+                    "binary": app.binary,
+                    "media": app.media,
+                    "route": app.route,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     if apps.is_empty() {
         println!("No audio streams playing.");
         return Ok(());
@@ -266,11 +326,22 @@ fn cmd_apply(backend: &dyn PipeWireBackend) -> Result<()> {
     Ok(())
 }
 
-fn cmd_devices(backend: &dyn PipeWireBackend) -> Result<()> {
+fn cmd_devices(backend: &dyn PipeWireBackend, json: bool) -> Result<()> {
     let state = BroadcastState::load()?;
 
     let output_devices = broadcast_core::list_output_devices(backend, &state.nodes.output_sink)?;
     let input_devices = broadcast_core::list_input_devices(backend)?;
+
+    if json {
+        let out = serde_json::json!({
+            "output": output_devices,
+            "input": input_devices,
+            "preferred_output_sink": state.preferred_output_sink,
+            "preferred_input_source": state.preferred_input_source,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
 
     println!("Output devices (sinks):");
     if output_devices.is_empty() {
@@ -391,7 +462,7 @@ fn cmd_set_device(
 /// Derives the playback node name from the capture node name (strips "capture." prefix).
 fn ensure_default_source(backend: &dyn PipeWireBackend, state: &BroadcastState) {
     let source_name = state.filtered_source_name();
-    if let Err(e) = backend.set_default_source(&source_name) {
+    if let Err(e) = backend.set_default_source(source_name) {
         eprintln!("⚠  Could not set default source to '{source_name}': {e}");
     }
     if let Err(e) = write_wireplumber_default_source(source_name) {
@@ -401,8 +472,7 @@ fn ensure_default_source(backend: &dyn PipeWireBackend, state: &BroadcastState) 
 
 fn write_wireplumber_default_source(source_name: &str) -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let conf_dir =
-        std::path::PathBuf::from(&home).join(".config/wireplumber/wireplumber.conf.d");
+    let conf_dir = std::path::PathBuf::from(&home).join(".config/wireplumber/wireplumber.conf.d");
     std::fs::create_dir_all(&conf_dir)?;
     let conf_path = conf_dir.join("50-broadcast-defaults.conf");
     let content = format!(
@@ -459,7 +529,7 @@ fn cmd_fix_routing(backend: &dyn PipeWireBackend) -> Result<()> {
 
     if !health.default_source_correct {
         let source_name = state.filtered_source_name();
-        match backend.set_default_source(&source_name) {
+        match backend.set_default_source(source_name) {
             Ok(()) => {
                 println!("  ✓ Default source set to '{source_name}'");
                 if let Err(e) = write_wireplumber_default_source(source_name) {
@@ -547,6 +617,32 @@ fn cmd_set_backend(backend: &dyn PipeWireBackend, name: &str) -> Result<()> {
     );
     if state.active {
         let _ = filter::set_filter_active(backend, &state, true);
+    }
+    Ok(())
+}
+
+/// Set the Maxine denoising intensity and, if the Maxine backend is active
+/// and its config is already installed, rewrite the filter chain config with
+/// the new value in place (a PipeWire restart is still needed to apply it,
+/// same as any other `install-config` change).
+fn cmd_set_intensity(percent: f32) -> Result<()> {
+    let mut state = BroadcastState::load()?;
+    state.maxine_intensity = (percent / 100.0).clamp(0.0, 1.0);
+    state.save()?;
+    eprintln!(
+        "Maxine intensity set to {:.0}%",
+        state.maxine_intensity * 100.0
+    );
+
+    if state.backend == Backend::Maxine {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let conf_dir = std::path::PathBuf::from(&home).join(".config/pipewire/pipewire.conf.d");
+        if conf_dir.exists() {
+            write_maxine_configs(&conf_dir, state.maxine_intensity)?;
+            eprintln!(
+                "Config rewritten. Run 'broadcast-ctl install-config --apply' to reload PipeWire."
+            );
+        }
     }
     Ok(())
 }
@@ -748,7 +844,10 @@ EnvironmentFile=-%h/.config/systemd/user/pipewire-maxine.env
     }
     std::fs::write(&dropin_path, dropin)?;
 
-    println!("  Wrote Maxine PipeWire env helper: {}", script_path.display());
+    println!(
+        "  Wrote Maxine PipeWire env helper: {}",
+        script_path.display()
+    );
     println!("  Wrote PipeWire user drop-in: {}", dropin_path.display());
     let _ = conf_dir;
     Ok(())
