@@ -85,7 +85,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk4-layer-shell-dev \
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtk-layer-shell-dev \
             pkg-config ladspa-sdk
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
