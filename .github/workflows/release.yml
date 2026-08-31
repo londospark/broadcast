@@ -30,23 +30,27 @@ jobs:
           restore-keys: cargo-test-
       - run: cargo test
 
-  build-arch:
+  # Compiles the whole workspace exactly once. Ubuntu 24.04 has the oldest
+  # glibc of our three targets (Arch rolling and Fedora latest both ship
+  # newer), and shared-library ABI compatibility only runs forward — a
+  # binary built against an older glibc/GTK4 runs fine on a newer one, not
+  # the other way round. So building here is what makes it safe to reuse
+  # these binaries for build-deb and build-rpm below without recompiling.
+  build:
     needs: test
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
+    runs-on: ubuntu-24.04
     env:
       # `secrets` isn't a valid context inside a step's `if:` — only inside
       # `env:`/`run:` — so it's mirrored into a job-level env var here and
       # the step below gates on that instead.
       NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
     steps:
+      - uses: actions/checkout@v7
       - name: Install dependencies
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa \
-            curl unzip
-      - uses: actions/checkout@v7
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config ladspa-sdk \
+            meson ninja-build libwayland-dev wayland-protocols curl unzip
 
       - name: Cache cargo registry & build artifacts
         uses: actions/cache@v6
@@ -55,8 +59,36 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-arch-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-arch-
+          key: cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-build-
+
+      # Ubuntu 24.04 (noble) only packages the GTK3-only `gtk-layer-shell`
+      # library; the GTK4 fork used by broadcast-gui (`gtk4-layer-shell`,
+      # a separate upstream project) didn't land in Ubuntu until 25.10.
+      # Build it from source instead. Staged into a DESTDIR so the (small,
+      # rarely-changing) build output can be cached and just copied into
+      # place on a cache hit, instead of re-cloning and recompiling it
+      # every run.
+      - name: Cache gtk4-layer-shell build
+        id: cache-gtk4ls
+        uses: actions/cache@v6
+        with:
+          path: /tmp/gtk4-layer-shell-install
+          key: gtk4-layer-shell-v1.3.0-noble
+      - name: Build gtk4-layer-shell from source
+        if: steps.cache-gtk4ls.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v1.3.0 \
+            https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
+          cd /tmp/gtk4-layer-shell
+          meson setup build --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu \
+            -Dexamples=false -Ddocs=false -Dtests=false -Dintrospection=false -Dvapi=false
+          ninja -C build
+          DESTDIR=/tmp/gtk4-layer-shell-install ninja -C build install
+      - name: Install gtk4-layer-shell
+        run: |
+          sudo cp -a /tmp/gtk4-layer-shell-install/usr/. /usr/
+          sudo ldconfig
 
       # The SDK download (headers/libs/models) is multi-GB and pinned to a
       # fixed version+effects set inside the script, so it's safe to cache
@@ -103,59 +135,22 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: arch-binaries
+          name: linux-binaries
           path: release/
 
+  # Packaging only — no compiler, no GTK dev headers, no gtk4-layer-shell
+  # build. Just takes the binaries the `build` job already produced and
+  # wraps them in a .deb.
   build-deb:
-    needs: test
+    needs: build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config ladspa-sdk \
-            meson ninja-build libwayland-dev wayland-protocols
-
-      - name: Cache cargo registry & build artifacts
-        uses: actions/cache@v6
+      - name: Download binaries from build job
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-deb-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deb-
-
-      # Ubuntu 24.04 (noble) only packages the GTK3-only `gtk-layer-shell`
-      # library; the GTK4 fork used by broadcast-gui (`gtk4-layer-shell`,
-      # a separate upstream project) didn't land in Ubuntu until 25.10.
-      # Build it from source instead — same version Fedora currently ships,
-      # so build-deb and build-rpm stay on matching library versions.
-      # Staged into a DESTDIR so the (small, rarely-changing) build output
-      # can be cached and just copied into place on a cache hit, instead of
-      # re-cloning and recompiling it every run.
-      - name: Cache gtk4-layer-shell build
-        id: cache-gtk4ls
-        uses: actions/cache@v6
-        with:
-          path: /tmp/gtk4-layer-shell-install
-          key: gtk4-layer-shell-v1.3.0-noble
-      - name: Build gtk4-layer-shell from source
-        if: steps.cache-gtk4ls.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch v1.3.0 \
-            https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
-          cd /tmp/gtk4-layer-shell
-          meson setup build --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu \
-            -Dexamples=false -Ddocs=false -Dtests=false -Dintrospection=false -Dvapi=false
-          ninja -C build
-          DESTDIR=/tmp/gtk4-layer-shell-install ninja -C build install
-      - name: Install gtk4-layer-shell
-        run: |
-          sudo cp -a /tmp/gtk4-layer-shell-install/usr/. /usr/
-          sudo ldconfig
-
+          name: linux-binaries
+          path: target/release/
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo-deb binary
@@ -168,9 +163,9 @@ jobs:
         if: steps.cache-cargo-deb.outputs.cache-hit != 'true'
         run: cargo install cargo-deb
       - name: Build deb (broadcast-ctl)
-        run: cargo deb -p broadcast-ctl
+        run: cargo deb -p broadcast-ctl --no-build
       - name: Build deb (broadcast-gui)
-        run: cargo deb -p broadcast-gui
+        run: cargo deb -p broadcast-gui --no-build
       - name: Collect debs
         run: |
           mkdir -p release
@@ -180,26 +175,20 @@ jobs:
           name: deb-packages
           path: release/
 
+  # Packaging only, same as build-deb — cargo-generate-rpm never compiles,
+  # it just wraps already-built binaries, so no Fedora container needed.
   build-rpm:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
     steps:
-      - name: Install dependencies
-        run: |
-          dnf install -y gcc gtk4-devel libadwaita-devel gtk4-layer-shell-devel \
-            pkg-config rust cargo git ladspa-devel
       - uses: actions/checkout@v7
-      - name: Cache cargo registry & build artifacts
-        uses: actions/cache@v6
+      - name: Download binaries from build job
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-rpm-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-rpm-
+          name: linux-binaries
+          path: target/release/
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo-generate-rpm binary
         id: cache-cargo-generate-rpm
         uses: actions/cache@v6
@@ -209,8 +198,6 @@ jobs:
       - name: Install cargo-generate-rpm
         if: steps.cache-cargo-generate-rpm.outputs.cache-hit != 'true'
         run: cargo install cargo-generate-rpm
-      - name: Build release
-        run: cargo build --release
       - name: Generate RPMs
         run: |
           mkdir -p release
@@ -222,7 +209,7 @@ jobs:
           path: release/
 
   release:
-    needs: [build-arch, build-deb, build-rpm]
+    needs: [build, build-deb, build-rpm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -232,11 +219,10 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            artifacts/arch-binaries/broadcast-ctl
-            artifacts/arch-binaries/broadcast-gui
-            artifacts/arch-binaries/broadcast-x86_64-linux.tar.gz
-            artifacts/arch-binaries/libbroadcast_maxine_ladspa.so
+            artifacts/linux-binaries/broadcast-ctl
+            artifacts/linux-binaries/broadcast-gui
+            artifacts/linux-binaries/broadcast-x86_64-linux.tar.gz
+            artifacts/linux-binaries/libbroadcast_maxine_ladspa.so
             artifacts/deb-packages/*.deb
             artifacts/rpm-packages/*.rpm
           generate_release_notes: true
-
