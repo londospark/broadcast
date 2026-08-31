@@ -14,12 +14,20 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
+    env:
+      # `secrets` isn't a valid context inside a step's `if:` — only inside
+      # `env:`/`run:` — so it's mirrored into a job-level env var here and
+      # the step below gates on that instead. Forked-repo PRs don't get
+      # repo secrets, so this (and the Maxine build it gates) is skipped
+      # there — the rest of CI still runs against the DeepFilterNet path.
+      NGC_API_KEY: ${{ secrets.NGC_API_KEY }}
 
     steps:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa
+          pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa \
+            curl unzip
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -34,11 +42,21 @@ jobs:
           key: cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-
 
+      # ── Optional: download Maxine SDK so the GPU backend actually builds
+      # and is checked by clippy/tests too, not just the CPU-only stub.
+      # Set NGC_API_KEY as a GitHub Actions secret to enable this (free key:
+      # https://org.ngc.nvidia.com/setup/api-key). Skipped on forked-repo
+      # PRs, which don't receive secrets — see broadcast-maxine-ladspa/README.md.
+      - name: Download NVIDIA Maxine SDK (optional)
+        if: ${{ env.NGC_API_KEY != '' }}
+        run: bash scripts/install-maxine-sdk.sh
+
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Clippy
-        # broadcast-maxine-ladspa compiles as an empty stub without NVAFX_SDK — that's fine.
+        # broadcast-maxine-ladspa compiles as an empty stub when the SDK
+        # above wasn't downloaded (no NGC_API_KEY, e.g. a forked-repo PR).
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
