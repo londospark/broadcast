@@ -42,6 +42,16 @@ jobs:
           key: cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-
 
+      # The SDK download (headers/libs/models) is multi-GB and pinned to a
+      # fixed version+effects set inside the script, so it's safe to cache
+      # by that version — bump the key if install-maxine-sdk.sh's
+      # SDK_VERSION or effects list ever changes.
+      - name: Cache Maxine SDK download
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/nvidia-maxine-sdk
+          key: maxine-sdk-v2.1.0-denoiser-dereverb
+
       # ── Optional: download Maxine SDK so the GPU backend actually builds
       # and is checked by clippy/tests too, not just the CPU-only stub.
       # Set NGC_API_KEY as a GitHub Actions secret to enable this (free key:

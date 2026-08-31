@@ -19,6 +19,15 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa
       - uses: actions/checkout@v7
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-test-
       - run: cargo test
 
   build-arch:
@@ -38,6 +47,26 @@ jobs:
           pacman -S --noconfirm base-devel git rust gtk4 libadwaita gtk4-layer-shell ladspa \
             curl unzip
       - uses: actions/checkout@v7
+
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-arch-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-arch-
+
+      # The SDK download (headers/libs/models) is multi-GB and pinned to a
+      # fixed version+effects set inside the script, so it's safe to cache
+      # by that version — bump the key if install-maxine-sdk.sh's
+      # SDK_VERSION or effects list ever changes.
+      - name: Cache Maxine SDK download
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/nvidia-maxine-sdk
+          key: maxine-sdk-v2.1.0-denoiser-dereverb
 
       # ── Optional: download Maxine SDK and build the GPU plugin ─────────
       # Set NGC_API_KEY as a GitHub Actions secret to enable Maxine builds
@@ -88,12 +117,32 @@ jobs:
           sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config ladspa-sdk \
             meson ninja-build libwayland-dev wayland-protocols
 
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-deb-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deb-
+
       # Ubuntu 24.04 (noble) only packages the GTK3-only `gtk-layer-shell`
       # library; the GTK4 fork used by broadcast-gui (`gtk4-layer-shell`,
       # a separate upstream project) didn't land in Ubuntu until 25.10.
       # Build it from source instead — same version Fedora currently ships,
       # so build-deb and build-rpm stay on matching library versions.
+      # Staged into a DESTDIR so the (small, rarely-changing) build output
+      # can be cached and just copied into place on a cache hit, instead of
+      # re-cloning and recompiling it every run.
+      - name: Cache gtk4-layer-shell build
+        id: cache-gtk4ls
+        uses: actions/cache@v6
+        with:
+          path: /tmp/gtk4-layer-shell-install
+          key: gtk4-layer-shell-v1.3.0-noble
       - name: Build gtk4-layer-shell from source
+        if: steps.cache-gtk4ls.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v1.3.0 \
             https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
@@ -101,11 +150,22 @@ jobs:
           meson setup build --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu \
             -Dexamples=false -Ddocs=false -Dtests=false -Dintrospection=false -Dvapi=false
           ninja -C build
-          sudo ninja -C build install
+          DESTDIR=/tmp/gtk4-layer-shell-install ninja -C build install
+      - name: Install gtk4-layer-shell
+        run: |
+          sudo cp -a /tmp/gtk4-layer-shell-install/usr/. /usr/
           sudo ldconfig
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo-deb binary
+        id: cache-cargo-deb
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-deb
+          key: cargo-deb-bin-${{ runner.os }}
       - name: Install cargo-deb
+        if: steps.cache-cargo-deb.outputs.cache-hit != 'true'
         run: cargo install cargo-deb
       - name: Build deb (broadcast-ctl)
         run: cargo deb -p broadcast-ctl
@@ -131,7 +191,23 @@ jobs:
           dnf install -y gcc gtk4-devel libadwaita-devel gtk4-layer-shell-devel \
             pkg-config rust cargo git ladspa-devel
       - uses: actions/checkout@v7
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-rpm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-rpm-
+      - name: Cache cargo-generate-rpm binary
+        id: cache-cargo-generate-rpm
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-generate-rpm
+          key: cargo-generate-rpm-bin-${{ runner.os }}
       - name: Install cargo-generate-rpm
+        if: steps.cache-cargo-generate-rpm.outputs.cache-hit != 'true'
         run: cargo install cargo-generate-rpm
       - name: Build release
         run: cargo build --release
