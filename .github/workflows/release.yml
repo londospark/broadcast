@@ -93,12 +93,17 @@ jobs:
       # The SDK download (headers/libs/models) is multi-GB and pinned to a
       # fixed version+effects set inside the script, so it's safe to cache
       # by that version — bump the key if install-maxine-sdk.sh's
-      # SDK_VERSION or effects list ever changes.
+      # SDK_VERSION or effects list changes, or if the architecture list
+      # below (build-maxine-runtime-bundle.sh) changes. actions/cache only
+      # saves an updated cache on a miss, not a hit, so the key has to
+      # reflect everything this job downloads into this path — otherwise a
+      # hit silently restores a stale subset and every architecture missing
+      # from it gets re-downloaded from scratch on every single run.
       - name: Cache Maxine SDK download
         uses: actions/cache@v6
         with:
           path: ~/.local/share/nvidia-maxine-sdk
-          key: maxine-sdk-v2.1.0-denoiser-dereverb
+          key: maxine-sdk-v2.1.0-denoiser-dereverb-t4-a10-l40-rtx_pro_6000
 
       # ── Optional: download Maxine SDK and build the GPU plugin ─────────
       # Set NGC_API_KEY as a GitHub Actions secret to enable Maxine builds
