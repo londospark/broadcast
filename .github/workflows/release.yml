@@ -140,8 +140,10 @@ jobs:
               echo "Maxine plugin included in release"
             fi
           fi
-          cd release && tar czf broadcast-x86_64-linux.tar.gz broadcast-ctl broadcast-gui \
-            $(ls libbroadcast_maxine_ladspa.so 2>/dev/null || true)
+          cd release
+          tar_files=(broadcast-ctl broadcast-gui)
+          [ -f libbroadcast_maxine_ladspa.so ] && tar_files+=(libbroadcast_maxine_ladspa.so)
+          tar czf broadcast-x86_64-linux.tar.gz "${tar_files[@]}"
 
       - uses: actions/upload-artifact@v7
         with:
