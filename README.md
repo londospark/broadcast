@@ -18,7 +18,9 @@ Think of it as NVIDIA Broadcast for Linux, but open source and running on any ha
 
 ## Screenshots
 
-_Coming soon_
+<img src="screenshots/omarchy-panel.png" alt="Broadcast's Omarchy bar-widget panel, showing the Maxine (GPU) backend selected at 100% intensity, healthy filter status, real output/input device names, and per-app routing" width="420">
+
+The [Omarchy plugin](#omarchy-plugin)'s panel — backend selector, GPU intensity, health status with one-click routing fixes, device pickers, and per-app filtering, all from the bar.
 
 ## Requirements
 
