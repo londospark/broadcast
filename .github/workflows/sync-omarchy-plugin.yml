@@ -1,0 +1,25 @@
+name: Sync Omarchy plugin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'omarchy-plugin/**'
+      - 'LICENSE'
+      - 'scripts/sync-omarchy-plugin-repo.sh'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Deploy key scoped to write access on just broadcast-omarchy-plugin
+      # (not a personal-account token with broader repo access).
+      - name: Set up deploy key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.PLUGIN_SYNC_DEPLOY_KEY }}
+
+      - name: Sync plugin repo
+        run: bash scripts/sync-omarchy-plugin-repo.sh
