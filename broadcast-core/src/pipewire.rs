@@ -291,7 +291,44 @@ pub fn set_maxine_enabled(enabled: bool) -> Result<()> {
         .args(["--user", "restart", "wireplumber"])
         .status();
 
+    // WirePlumber re-enumerates ALSA cards asynchronously after restarting, so
+    // the hardware sink is briefly absent from `pactl list sinks` right after
+    // the restarts above return. Callers (e.g. apply_routes) need the hardware
+    // sink to exist immediately after this function returns, so wait for it.
+    wait_for_hardware_sink();
+
     Ok(())
+}
+
+/// Poll `pactl` for a real (non-filter, non-virtual) hardware sink, briefly,
+/// to ride out the window after a PipeWire/WirePlumber restart during which
+/// ALSA cards haven't been re-enumerated yet. Best-effort: gives up silently
+/// after the timeout so callers still get their normal "not found" error
+/// instead of hanging indefinitely.
+fn wait_for_hardware_sink() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let sinks = RealBackend.list_sinks().unwrap_or_default();
+        let found = sinks.iter().any(|sink| {
+            let props = sink.get("properties").and_then(|v| v.as_object());
+            let name = props
+                .and_then(|p| p.get("node.name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if name.is_empty() || is_broadcast_virtual_sink(name) {
+                return false;
+            }
+            let media_class = props
+                .and_then(|p| p.get("media.class"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            media_class.is_empty() || !media_class.contains("Virtual")
+        });
+        if found || std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 // ---------------------------------------------------------------------------
