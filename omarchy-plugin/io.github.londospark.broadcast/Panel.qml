@@ -16,7 +16,6 @@ Panel {
   property var status: null
   property var apps: []
   property var devices: ({ output: [], input: [] })
-  property var hyprClients: []
 
   property var actionQueue: []
   property bool actionBusy: false
@@ -44,37 +43,7 @@ Panel {
   function refreshStatus() { if (!statusProc.running) statusProc.running = true }
   function refreshApps() { if (root.opened && !appsProc.running) appsProc.running = true }
   function refreshDevices() { if (root.opened && !devicesProc.running) devicesProc.running = true }
-  function refreshHyprClients() { if (root.opened && !hyprClientsProc.running) hyprClientsProc.running = true }
-  function refreshAll() { refreshStatus(); refreshApps(); refreshDevices(); refreshHyprClients() }
-
-  // Chromium-based browsers give every window/tab's audio stream the exact
-  // same name ("Brave", "Playback") with no way to tell them apart from
-  // PipeWire metadata alone. Hyprland's window titles are the best
-  // available stand-in — when the count of same-named streams matches the
-  // count of that app's open windows, pair them up positionally and show
-  // the real title; otherwise fall back to a plain ordinal rather than
-  // risk showing a title next to the wrong stream.
-  function duplicateSuffix(app) {
-    var name = app.name || app.binary
-    var group = []
-    for (var i = 0; i < root.apps.length; i++) {
-      var a = root.apps[i]
-      if ((a.name || a.binary) === name) group.push(a)
-    }
-    if (group.length <= 1) return ""
-
-    var ordinal = 0
-    for (var j = 0; j < group.length; j++) {
-      if (group[j].id === app.id) ordinal = j + 1
-    }
-
-    var titles = Model.browserWindowTitles(app.binary, root.hyprClients)
-    if (titles.length === group.length) {
-      var title = titles[ordinal - 1]
-      return " · " + (title.length > 46 ? title.slice(0, 45) + "…" : title)
-    }
-    return " · window " + ordinal
-  }
+  function refreshAll() { refreshStatus(); refreshApps(); refreshDevices() }
 
   function deviceOptions(list) {
     var opts = [{ value: "auto", label: "Auto-detect" }]
@@ -150,16 +119,6 @@ Panel {
         var parsed = Model.parseStatus(devicesOut.text)
         if (parsed) root.devices = parsed
       }
-    }
-  }
-
-  Process {
-    id: hyprClientsProc
-    command: ["hyprctl", "clients", "-j"]
-    stdout: StdioCollector {
-      id: hyprClientsOut
-      waitForEnd: true
-      onStreamFinished: root.hyprClients = Model.parseHyprClients(hyprClientsOut.text)
     }
   }
 
@@ -515,7 +474,11 @@ Panel {
             }
 
             Repeater {
-              model: root.apps
+              // One row per app, not per stream — an app can have several
+              // audio streams open at once (e.g. multiple browser tabs);
+              // they're always routed together, so a single simple toggle
+              // per app is all there is to show.
+              model: Model.dedupeAppsByBinary(root.apps)
 
               CursorSurface {
                 id: appRow
@@ -535,7 +498,7 @@ Panel {
                   spacing: Style.space(8)
 
                   Text {
-                    text: (appRow.modelData.name || appRow.modelData.binary) + root.duplicateSuffix(appRow.modelData)
+                    text: appRow.modelData.name || appRow.modelData.binary
                     color: root.barForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
@@ -549,15 +512,9 @@ Panel {
                     checked: appRow.modelData.route === "filtered"
                     foreground: root.barForeground
                     onToggled: {
-                      // Routed by this stream's own PipeWire id, not by app
-                      // name — apps like browsers run every window/tab
-                      // through one shared audio process with identical
-                      // names, so routing by name would move all of them
-                      // together. This only affects this one stream, for
-                      // this session (see broadcast-ctl route-id --help).
                       var next = appRow.modelData.route === "filtered" ? "direct" : "filtered"
                       root.runActions(
-                        [["broadcast-ctl", "route-id", String(appRow.modelData.id), next]],
+                        [["broadcast-ctl", "route", appRow.modelData.binary, next]],
                         (appRow.modelData.name || appRow.modelData.binary) + (next === "filtered" ? " → filtered" : " → direct")
                       )
                     }
