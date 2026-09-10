@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::backend::PipeWireBackend;
-use crate::pipewire;
+use crate::pipewire::{self, normalize_binary};
 use crate::state::{AppRoute, BroadcastState};
 
 /// Pure function: find the default hardware sink's node.name from a list of
@@ -79,7 +79,7 @@ pub fn route_app(
 
     let app_lower = app_name.to_lowercase();
     for input in &inputs {
-        let matches = input.app_binary.to_lowercase().contains(&app_lower)
+        let matches = normalize_binary(&input.app_binary).contains(&app_lower)
             || input.client_name.to_lowercase().contains(&app_lower);
         if matches {
             backend.move_sink_input(input.id, target)?;
@@ -111,7 +111,7 @@ pub fn apply_routes(backend: &dyn PipeWireBackend, state: &BroadcastState) -> Re
         }
 
         let app_key = if !input.app_binary.is_empty() {
-            input.app_binary.to_lowercase()
+            normalize_binary(&input.app_binary)
         } else {
             input.client_name.to_lowercase()
         };
@@ -467,6 +467,23 @@ mod tests {
         // brave → filter sink, spotify → hw sink
         assert_eq!(moved[0], (100, FILTER.to_string()));
         assert_eq!(moved[1], (101, HW.to_string()));
+    }
+
+    #[test]
+    fn test_apply_routes_normalizes_deleted_binary_suffix() {
+        // pactl reports application.process.binary as "brave (deleted)"
+        // after the binary is replaced on disk (e.g. an upgrade); the
+        // persisted app_routes key is the plain "brave". apply_routes must
+        // still match it rather than silently falling back to the default.
+        let inputs = vec![make_input(100, 5, "brave (deleted)", "Brave", "Playback")];
+        let backend = backend_with_sinks(inputs);
+        let mut state = default_state();
+        state.set_app_route("brave", AppRoute::Filtered);
+
+        apply_routes(&backend, &state).unwrap();
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(*moved, vec![(100, FILTER.to_string())]);
     }
 
     // ── filter chain output routing ────────────────────────────────────

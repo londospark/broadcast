@@ -48,13 +48,34 @@ pub fn is_broadcast_virtual_source(name: &str) -> bool {
     matches!(name, "deepfilter_mic" | "maxine_mic")
 }
 
+/// `application.process.binary` can arrive as e.g. "brave (deleted)" when
+/// the executable on disk was replaced (an upgrade) after the process
+/// launched — `/proc/<pid>/exe` then resolves with that suffix. Strip it
+/// and lowercase, so app-route lookups keep matching across an upgrade
+/// instead of silently falling back to the default route.
+pub fn normalize_binary(binary: &str) -> String {
+    binary
+        .strip_suffix(" (deleted)")
+        .unwrap_or(binary)
+        .trim()
+        .to_lowercase()
+}
+
 /// Parse pactl JSON sinks into a list of available hardware output devices,
 /// filtering out broadcast filter sinks and virtual sinks.
+///
+/// A flaky ALSA/HDMI device can make WirePlumber register the same
+/// node.name over and over as it repeatedly fails to start and gets
+/// recreated (seen in the wild: hundreds of duplicate entries for one
+/// physical port) — node.name is the actual routing identifier, so only
+/// one entry per name is ever meaningful here regardless of how many
+/// stale duplicates the backend reports.
 pub fn parse_sinks_as_devices(
     sinks: &[serde_json::Value],
     filter_sink_name: &str,
 ) -> Vec<AudioDevice> {
     let mut devices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for sink in sinks {
         let props = sink.get("properties").and_then(|v| v.as_object());
         let name = props
@@ -69,6 +90,9 @@ pub fn parse_sinks_as_devices(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if media_class.contains("Virtual") {
+            continue;
+        }
+        if !seen.insert(name.to_string()) {
             continue;
         }
         let description = props
@@ -92,8 +116,11 @@ pub fn parse_sinks_as_devices(
 
 /// Parse pactl JSON sources into a list of available hardware input devices,
 /// filtering out monitors, virtual sources, and broadcast filter sources.
+///
+/// Deduped by node.name — see `parse_sinks_as_devices` for why.
 pub fn parse_sources_as_devices(sources: &[serde_json::Value]) -> Vec<AudioDevice> {
     let mut devices = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for source in sources {
         let props = source.get("properties").and_then(|v| v.as_object());
         let name = props
@@ -117,6 +144,9 @@ pub fn parse_sources_as_devices(sources: &[serde_json::Value]) -> Vec<AudioDevic
         }
         // Skip the filtered virtual microphones exported by the broadcast stack.
         if is_broadcast_virtual_source(name) {
+            continue;
+        }
+        if !seen.insert(name.to_string()) {
             continue;
         }
         let description = props
@@ -366,6 +396,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // ── normalize_binary ───────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_binary_strips_deleted_suffix() {
+        assert_eq!(normalize_binary("brave (deleted)"), "brave");
+    }
+
+    #[test]
+    fn test_normalize_binary_lowercases() {
+        assert_eq!(normalize_binary("Brave"), "brave");
+    }
+
+    #[test]
+    fn test_normalize_binary_plain() {
+        assert_eq!(normalize_binary("spotify"), "spotify");
+    }
+
     // ── find_node_id_in ────────────────────────────────────────────────
 
     #[test]
@@ -590,6 +637,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_sinks_as_devices_dedups_by_node_name() {
+        // A flaky HDMI/ALSA device can make WirePlumber re-register the
+        // same node.name many times over (seen in the wild: hundreds of
+        // duplicates for one physical port) — only one entry should ever
+        // surface per name.
+        let mut sinks = Vec::new();
+        for i in 0..50 {
+            sinks.push(json!({
+                "index": 1000 + i,
+                "properties": {
+                    "node.name": "alsa_output.pci-0000_0a_00.1.hdmi-stereo",
+                    "node.description": "GB203 HDMI",
+                    "media.class": "Audio/Sink"
+                }
+            }));
+        }
+        sinks.push(json!({
+            "index": 2000,
+            "properties": {
+                "node.name": "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                "node.description": "Motherboard Audio",
+                "media.class": "Audio/Sink"
+            }
+        }));
+        let devices = parse_sinks_as_devices(&sinks, "broadcast_filter_sink");
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].name, "alsa_output.pci-0000_0a_00.1.hdmi-stereo");
+        assert_eq!(
+            devices[1].name,
+            "alsa_output.pci-0000_0c_00.4.analog-stereo"
+        );
+    }
+
+    #[test]
     fn test_parse_sinks_as_devices_empty() {
         let devices = parse_sinks_as_devices(&[], "broadcast_filter_sink");
         assert!(devices.is_empty());
@@ -689,5 +770,22 @@ mod tests {
     fn test_parse_sources_as_devices_empty() {
         let devices = parse_sources_as_devices(&[]);
         assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn test_parse_sources_as_devices_dedups_by_node_name() {
+        let mut sources = Vec::new();
+        for i in 0..10 {
+            sources.push(json!({
+                "index": 1000 + i,
+                "properties": {
+                    "node.name": "alsa_input.pci-0000_0c_00.4.analog-stereo",
+                    "node.description": "Motherboard Mic",
+                    "media.class": "Audio/Source"
+                }
+            }));
+        }
+        let devices = parse_sources_as_devices(&sources);
+        assert_eq!(devices.len(), 1);
     }
 }

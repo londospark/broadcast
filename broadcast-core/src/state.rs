@@ -197,7 +197,7 @@ impl BroadcastState {
 
     /// Get the route for a specific app, falling back to default.
     pub fn route_for(&self, app_binary: &str) -> AppRoute {
-        let key = app_binary.to_lowercase();
+        let key = crate::pipewire::normalize_binary(app_binary);
         self.app_routes
             .get(&key)
             .copied()
@@ -206,7 +206,8 @@ impl BroadcastState {
 
     /// Set the route for a specific app.
     pub fn set_app_route(&mut self, app_binary: &str, route: AppRoute) {
-        self.app_routes.insert(app_binary.to_lowercase(), route);
+        self.app_routes
+            .insert(crate::pipewire::normalize_binary(app_binary), route);
     }
 
     /// Set the preferred output sink (None to auto-detect).
