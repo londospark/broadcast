@@ -77,7 +77,14 @@ pub fn route_app(
         AppRoute::Direct => &default_name,
     };
 
-    let app_lower = app_name.to_lowercase();
+    // Normalize the caller-supplied name the same way as the stream's own
+    // binary before matching: `apps --json` (and therefore the Omarchy
+    // panel's per-app toggle) reports `application.process.binary` verbatim,
+    // including the " (deleted)" suffix pactl adds once the executable is
+    // replaced on disk by an upgrade. Without this, `route "brave (deleted)"
+    // direct` matched nothing while still persisting the normalised key,
+    // so the toggle appeared to do nothing.
+    let app_lower = normalize_binary(app_name);
     for input in &inputs {
         let matches = normalize_binary(&input.app_binary).contains(&app_lower)
             || input.client_name.to_lowercase().contains(&app_lower);
@@ -403,6 +410,23 @@ mod tests {
         let moved = backend.moved_inputs.borrow();
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0], (100, HW.to_string())); // moved to the hw sink, by name
+    }
+
+    #[test]
+    fn test_route_app_normalizes_deleted_binary_suffix_in_arg() {
+        // The Omarchy panel passes the binary exactly as `apps --json`
+        // reports it, i.e. "brave (deleted)" after an in-place Brave
+        // upgrade. The argument must be normalised the same way as the
+        // stream's own binary, or nothing matches and the toggle no-ops.
+        let inputs = vec![make_input(100, 8, "brave (deleted)", "Brave", "Playback")];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        let routed = route_app(&backend, &state, "brave (deleted)", AppRoute::Direct).unwrap();
+        assert_eq!(routed, 1);
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(*moved, vec![(100, HW.to_string())]);
     }
 
     #[test]
