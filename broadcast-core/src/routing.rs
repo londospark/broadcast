@@ -430,6 +430,68 @@ mod tests {
     }
 
     #[test]
+    fn test_route_app_arg_with_suffix_matches_relaunched_stream() {
+        // The panel sends apps --json's verbatim binary, but Brave may have
+        // relaunched since the stream list was built, and the relaunched
+        // process reports the plain "brave" binary. The argument must be
+        // normalised before matching so the suffix in the argument can't
+        // make it miss.
+        let inputs = vec![make_input(100, 8, "brave", "Brave", "Playback")];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        let routed = route_app(&backend, &state, "brave (deleted)", AppRoute::Direct).unwrap();
+        assert_eq!(routed, 1);
+
+        let moved = backend.moved_inputs.borrow();
+        assert_eq!(*moved, vec![(100, HW.to_string())]);
+    }
+
+    #[test]
+    fn test_route_app_matches_mixed_binary_cohort() {
+        // One Brave process still running from before an upgrade ("brave
+        // (deleted)") plus one relaunched after it (plain "brave") collapse
+        // into one app row, and are always routed together. Routing either
+        // name must move both — i.e. the binary match is contains(), not
+        // just equality.
+        let inputs = vec![
+            make_input(100, 8, "brave (deleted)", "Brave", "Playback"),
+            make_input(101, 8, "brave", "Brave", "Playback"),
+        ];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        let routed = route_app(&backend, &state, "brave (deleted)", AppRoute::Direct).unwrap();
+        assert_eq!(routed, 2);
+
+        let moved = backend.moved_inputs.borrow().clone();
+        assert_eq!(moved, vec![(100, HW.to_string()), (101, HW.to_string())]);
+    }
+
+    #[test]
+    fn test_route_app_matches_binary_as_the_panel_sends_it() {
+        // apps --json passes application.process.binary through verbatim
+        // ("brave (deleted)" right after an in-place upgrade); the panel
+        // keys its per-app toggles on that value and sends it straight
+        // back. Pushing that exact string into route_app must move the
+        // stream — neither side may depend on the other stripping it.
+        let inputs = vec![make_input(100, 5, "brave (deleted)", "Brave", "Playback")];
+        let backend = backend_with_sinks(inputs);
+        let state = default_state();
+
+        let apps = list_apps(&backend, &state).unwrap();
+        assert_eq!(apps[0].binary, "brave (deleted)");
+
+        let binary = apps[0].binary.clone();
+        let routed = route_app(&backend, &state, &binary, AppRoute::Filtered).unwrap();
+        assert_eq!(routed, 1);
+        assert_eq!(
+            *backend.moved_inputs.borrow(),
+            vec![(100, FILTER.to_string())]
+        );
+    }
+
+    #[test]
     fn test_route_app_no_match() {
         let inputs = vec![make_input(100, 5, "brave", "Brave Browser", "Playback")];
         let backend = backend_with_sinks(inputs);

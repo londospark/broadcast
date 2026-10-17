@@ -357,6 +357,23 @@ mod tests {
     }
 
     #[test]
+    fn test_set_app_route_strips_deleted_suffix_from_key() {
+        // The panel's per-app toggle sends the binary verbatim from apps
+        // --json ("brave (deleted)" right after Brave replaced its binary
+        // on disk), and cmd_route persists the preference through
+        // set_app_route with that raw string. The key must be normalised
+        // down to plain "brave", or apply_routes misses it and the saved
+        // preference silently stops working across relaunches.
+        let mut s = BroadcastState::default();
+        s.set_app_route("brave (deleted)", AppRoute::Direct);
+        assert_eq!(s.route_for("brave"), AppRoute::Direct);
+        // Lookup side normalises too
+        assert_eq!(s.route_for("brave (deleted)"), AppRoute::Direct);
+        // And no "(deleted)" key ever persisted
+        assert!(!s.app_routes.contains_key("brave (deleted)"));
+    }
+
+    #[test]
     fn test_set_app_route() {
         let mut s = BroadcastState::default();
         s.set_app_route("spotify", AppRoute::Direct);
