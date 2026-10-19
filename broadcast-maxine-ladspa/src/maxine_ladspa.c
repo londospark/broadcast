@@ -22,7 +22,11 @@
  *                     room echo removal — closer to NVIDIA Broadcast's
  *                     Windows defaults). Auto-selects dereverb_denoiser when
  *                     that feature package was downloaded and its model is
- *                     found; set to "denoiser" to force plain denoising.
+ *                     found, except on SM 120 (Blackwell) where it is known
+ *                     to fail NvAFX_CreateEffect with status 6. Set to
+ *                     "denoiser" to force plain denoising, or to
+ *                     "dereverb_denoiser" to force the dereverb attempt even
+ *                     on Blackwell.
  */
 
 #define _GNU_SOURCE
@@ -87,7 +91,10 @@ static void ensure_sdk_global(void) {
 /* ── Global mutex to serialise TRT engine loads ──────────────────────
  * PipeWire loads both filter-chain configs at startup. Two concurrent
  * NvAFX_Load calls on the same model race inside TensorRT and the
- * second one fails. The mutex ensures they happen one at a time. */
+ * second one fails. The mutex ensures they happen one at a time.
+ *
+ * It also guards the process-wide effect cache below: activations from the
+ * mic chain and the output chain can happen concurrently. */
 static pthread_mutex_t g_trt_load_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── Instance data ───────────────────────────────────────────────────── */
@@ -148,6 +155,42 @@ typedef struct {
     int             out_avail;  /* samples available in output ring */
 } MaxineInstance;
 
+/* ── Process-wide loaded-effect cache ─────────────────────────────────
+ * PipeWire's filter-graph destroys and re-instantiates every LADSPA node on
+ * each graph activation: spa_filter_graph_activate() calls node_cleanup()
+ * and then instantiate() again (see spa/plugins/filter-graph/filter-graph.c).
+ * A per-instance lazy-init guard therefore cannot survive across
+ * activations, and a fresh MaxineInstance used to reload the TensorRT
+ * engine every time — ~1.1 s per channel, i.e. seconds of silence on the
+ * output chain before playback starts.
+ *
+ * Keep loaded NvAFX effects alive for the lifetime of the PipeWire process
+ * and hand the same handle back out when a later activation needs that
+ * model again. `in_use` stops one handle being shared by two live chains
+ * (the mono mic chain and the stereo output chain can run simultaneously) —
+ * if both need one at once a second handle is loaded and cached too.
+ *
+ * Handles are not destroyed when a chain deactivates — only once, at
+ * process exit, by destroy_effect_cache(). The cache is bounded by the
+ * number of candidates that have actually loaded; the mono mic chain needs
+ * one handle and the stereo output chain two, so three in the common case.
+ */
+#define MAX_CACHED_EFFECTS 6
+
+typedef struct {
+    char         path[4096];
+    int          use_dereverb;
+    int          effect_version;
+    NvAFX_Handle handle;
+    int          in_use;
+} CachedEffect;
+
+static CachedEffect g_effect_cache[MAX_CACHED_EFFECTS];
+static int          g_effect_cache_count;
+
+static void destroy_effect_cache(void);
+static void ensure_exit_handler(void);
+
 /* ── Model path discovery ─────────────────────────────────────────────
  * Priority:
  *   1. NVAFX_MODEL_PATH env var (full path to .trtpkg) — effect is assumed
@@ -203,6 +246,17 @@ static int find_effect_model(char *buf, size_t n, const char *sdk,
     return found;
 }
 
+/* GPU SM version for a model file: NVAFX_SM wins (broadcast-ctl writes it
+ * from nvidia-smi), otherwise derive it from the .../sm_<N>/ path the model
+ * was found in. Returns 0 when neither is available. */
+static int model_sm_version(const char *model_path) {
+    const char *env = getenv("NVAFX_SM");
+    if (env && *env) return atoi(env);
+    const char *p = strstr(model_path, "/sm_");
+    if (!p) return 0;
+    return atoi(p + 4);
+}
+
 /* Builds an ordered, most-preferred-first list of (model, effect)
  * candidates for activate() to try loading in turn:
  *   1. NVAFX_MODEL_PATH env var, if set — a single explicit candidate,
@@ -210,7 +264,8 @@ static int find_effect_model(char *buf, size_t n, const char *sdk,
  *   2. dereverb_denoiser (noise + room echo removal — closer to what
  *      NVIDIA Broadcast applies by default on Windows), if that feature
  *      was linked in at build time, its model is present, and NVAFX_EFFECT
- *      hasn't forced plain denoiser.
+ *      hasn't forced plain denoiser. Skipped on SM 120 (Blackwell), where
+ *      the SDK reports EFFECT_NOT_AVAILABLE — unless explicitly forced.
  *   3. Plain denoiser, "v2" model — a newer retrain with noticeably better
  *      suppression of sharp transients (keyboard/mouse clicks) than v1.
  *   4. Plain denoiser, original "v1" model.
@@ -235,14 +290,32 @@ static int build_candidates(ModelCandidate *out, int max_out) {
 
 #ifdef NVAFX_HAS_DEREVERB_DENOISER
     const char *effect_env = getenv("NVAFX_EFFECT");
-    int want_dereverb = !(effect_env && strcmp(effect_env, "denoiser") == 0);
+    int force_dereverb = effect_env && strcmp(effect_env, "dereverb_denoiser") == 0;
+    int want_dereverb = force_dereverb ||
+                        !(effect_env && strcmp(effect_env, "denoiser") == 0);
     if (want_dereverb && count < max_out) {
         static const char *f[] = { "dereverb_denoiser_48k.trtpkg" };
         if (find_effect_model(out[count].path, sizeof(out[count].path), sdk,
                                "dereverb_denoiser", f, 1)) {
-            out[count].use_dereverb = 1;
-            out[count].effect_version = 0;
-            count++;
+            int sm = model_sm_version(out[count].path);
+            if (!force_dereverb && sm == 120) {
+                /* Blackwell reports NvAFX_CreateEffect status 6
+                 * (EFFECT_NOT_AVAILABLE) for dereverb_denoiser. Skip the
+                 * doomed attempt rather than paying for it on every
+                 * activation; other GPUs still try it, and
+                 * NVAFX_EFFECT=dereverb_denoiser forces it here too. */
+                static int logged;
+                if (!logged) {
+                    logged = 1;
+                    fprintf(stderr, "broadcast-maxine: skipping dereverb_denoiser "
+                                    "on sm_%d (known NvAFX status 6); set "
+                                    "NVAFX_EFFECT=dereverb_denoiser to force\n", sm);
+                }
+            } else {
+                out[count].use_dereverb = 1;
+                out[count].effect_version = 0;
+                count++;
+            }
         }
     }
 #endif
@@ -338,6 +411,93 @@ static NvAFX_Handle create_denoiser(const char *model_path, int use_dereverb, in
     return h;
 }
 
+/* Return a loaded effect for this candidate, reusing a cached handle when
+ * one is free. Caller must hold g_trt_load_mutex.
+ *
+ * *from_cache is set to 1 when an already-loaded handle was reused, 0 when
+ * a new one had to be loaded (or on failure). */
+static NvAFX_Handle acquire_effect(const ModelCandidate *c, int *from_cache) {
+    *from_cache = 0;
+
+    for (int i = 0; i < g_effect_cache_count; i++) {
+        CachedEffect *e = &g_effect_cache[i];
+        if (e->in_use) continue;
+        if (e->effect_version != c->effect_version ||
+            e->use_dereverb != c->use_dereverb ||
+            strcmp(e->path, c->path) != 0)
+            continue;
+
+        /* Drop the previous stream's model state so a reused handle starts
+         * clean, exactly like the freshly-created one it replaces. */
+        NvAFX_Bool reset[1] = { NVAFX_TRUE };
+        NvAFX_Status st = NvAFX_Reset(e->handle, reset, 1);
+        if (st != NVAFX_STATUS_SUCCESS)
+            fprintf(stderr, "broadcast-maxine: NvAFX_Reset on cached effect failed: %d\n", st);
+
+        e->in_use = 1;
+        *from_cache = 1;
+        return e->handle;
+    }
+
+    if (g_effect_cache_count >= MAX_CACHED_EFFECTS) {
+        fprintf(stderr, "broadcast-maxine: effect cache full (%d entries), "
+                        "not loading another\n", MAX_CACHED_EFFECTS);
+        return NULL;
+    }
+
+    NvAFX_Handle h = create_denoiser(c->path, c->use_dereverb, c->effect_version);
+    if (!h) return NULL;
+
+    CachedEffect *e = &g_effect_cache[g_effect_cache_count++];
+    snprintf(e->path, sizeof(e->path), "%s", c->path);
+    e->use_dereverb = c->use_dereverb;
+    e->effect_version = c->effect_version;
+    e->handle = h;
+    e->in_use = 1;
+
+    /* The SDK's own exit handlers are registered by now; ours must be
+     * registered after them so it runs first (atexit = LIFO). */
+    ensure_exit_handler();
+    return h;
+}
+
+/* Mark a handle free for a later activation. Deliberately does not destroy
+ * it — see the effect cache comment. Caller must hold g_trt_load_mutex. */
+static void release_effect(NvAFX_Handle h) {
+    if (!h) return;
+    for (int i = 0; i < g_effect_cache_count; i++) {
+        if (g_effect_cache[i].handle == h) {
+            g_effect_cache[i].in_use = 0;
+            return;
+        }
+    }
+}
+
+/* Tear the cache down at process exit. Cached effects keep TensorRT engines
+ * (and their worker threads) alive; if they outlive the SDK's own static
+ * destructors, libnvinfer segfaults during exit. atexit handlers run in
+ * reverse registration order, so ensure_exit_handler() is called only after
+ * an effect has actually loaded, i.e. after the SDK registered its own. */
+static void destroy_effect_cache(void) {
+    pthread_mutex_lock(&g_trt_load_mutex);
+    for (int i = 0; i < g_effect_cache_count; i++) {
+        if (g_effect_cache[i].handle) {
+            NvAFX_DestroyEffect(g_effect_cache[i].handle);
+            g_effect_cache[i].handle = NULL;
+        }
+        g_effect_cache[i].in_use = 0;
+    }
+    g_effect_cache_count = 0;
+    pthread_mutex_unlock(&g_trt_load_mutex);
+}
+
+static void ensure_exit_handler(void) {
+    static int registered;
+    if (registered) return;
+    registered = 1;
+    atexit(destroy_effect_cache);
+}
+
 /* ── LADSPA callbacks ────────────────────────────────────────────────── */
 static LADSPA_Handle instantiate(const LADSPA_Descriptor *desc,
                                  unsigned long sample_rate) {
@@ -378,7 +538,11 @@ static LADSPA_Handle instantiate(const LADSPA_Descriptor *desc,
 
 /* Deferred TRT engine load — called by PipeWire after connect_port, before run.
  * Serialised with a mutex so that two filter chains starting simultaneously
- * don't both try to compile/cache the TRT engine at the same time. */
+ * don't both try to compile/cache the TRT engine at the same time.
+ *
+ * Loaded effects come from the process-wide cache when possible, so a
+ * reactivation (PipeWire rebuilds the LADSPA graph on every activation)
+ * costs no engine load at all. */
 static void activate(LADSPA_Handle handle) {
     MaxineInstance *inst = (MaxineInstance *)handle;
     if (inst->initialized) return;
@@ -392,23 +556,24 @@ static void activate(LADSPA_Handle handle) {
      * what keeps the stream processed by falling through to the next
      * (ultimately the proven-working plain denoiser) instead of the
      * stream running unfiltered. */
+    int from_cache = 0;
     inst->active_candidate = -1;
     for (int i = 0; i < inst->n_candidates; i++) {
         ModelCandidate *c = &inst->candidates[i];
-        fprintf(stderr, "broadcast-maxine: activate — trying candidate %d/%d (%s): %s\n",
-                i + 1, inst->n_candidates, c->use_dereverb ? "dereverb_denoiser" : "denoiser",
-                c->path);
-        inst->effect = create_denoiser(c->path, c->use_dereverb, c->effect_version);
+        inst->effect = acquire_effect(c, &from_cache);
         if (inst->effect) {
             inst->active_candidate = i;
             break;
         }
-        fprintf(stderr, "broadcast-maxine: candidate %d failed, trying next...\n", i + 1);
+        fprintf(stderr, "broadcast-maxine: candidate %d/%d (%s) failed, trying next...\n",
+                i + 1, inst->n_candidates,
+                c->use_dereverb ? "dereverb_denoiser" : "denoiser");
     }
 
     if (inst->active_candidate >= 0 && inst->is_stereo) {
         ModelCandidate *c = &inst->candidates[inst->active_candidate];
-        inst->effect_r = create_denoiser(c->path, c->use_dereverb, c->effect_version);
+        int cached_r = 0;
+        inst->effect_r = acquire_effect(c, &cached_r);
         if (!inst->effect_r) {
             fprintf(stderr, "broadcast-maxine: stereo R channel load failed, "
                             "falling back to mono-duplicated output\n");
@@ -422,9 +587,10 @@ static void activate(LADSPA_Handle handle) {
                         "running in passthrough mode\n", inst->n_candidates);
     } else {
         ModelCandidate *c = &inst->candidates[inst->active_candidate];
-        fprintf(stderr, "broadcast-maxine: effect loaded ok (%s%s): %s\n",
+        fprintf(stderr, "broadcast-maxine: effect ready (%s%s, %s): %s\n",
                 c->use_dereverb ? "dereverb_denoiser" : "denoiser",
-                inst->is_stereo ? ", stereo" : ", mono", c->path);
+                inst->is_stereo ? ", stereo" : ", mono",
+                from_cache ? "cached" : "loaded", c->path);
     }
 }
 
@@ -524,8 +690,11 @@ static void run(LADSPA_Handle handle, unsigned long sample_count) {
 static void cleanup(LADSPA_Handle handle) {
     MaxineInstance *inst = (MaxineInstance *)handle;
     if (!inst) return;
-    NvAFX_DestroyEffect(inst->effect);
-    if (inst->effect_r) NvAFX_DestroyEffect(inst->effect_r);
+    pthread_mutex_lock(&g_trt_load_mutex);
+    if (inst->effect_r && inst->effect_r != inst->effect)
+        release_effect(inst->effect_r);
+    release_effect(inst->effect);
+    pthread_mutex_unlock(&g_trt_load_mutex);
     free(inst->in_buf_l);
     free(inst->out_buf_l);
     free(inst->in_buf_r);

@@ -136,6 +136,20 @@ which one it ends up running via `journalctl --user -u pipewire | grep
 broadcast-maxine`. Set `NVAFX_EFFECT=denoiser` to skip `dereverb_denoiser`
 even when present.
 
+On SM 120 (Blackwell) `dereverb_denoiser` is skipped automatically because
+the SDK returns `EFFECT_NOT_AVAILABLE` there. Set
+`NVAFX_EFFECT=dereverb_denoiser` to force the attempt anyway.
+
+### Startup latency and the effect cache
+
+PipeWire's filter graph destroys and re-instantiates every LADSPA node each
+time it is activated. Loading a Maxine engine costs ~1.1 s per channel
+(TensorRT deserialisation), so without caching, every playback start after
+the chain had been idle would be preceded by a couple of seconds of silence.
+The plugin therefore keeps loaded effects alive for the lifetime of the
+PipeWire process and reuses them on later activations; only the first
+activation after PipeWire starts pays the engine-load cost.
+
 ## LADSPA labels
 
 | Label | Description |

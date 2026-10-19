@@ -245,16 +245,20 @@ every push; a push missing `.SRCINFO` in the same commit is rejected.
   whichever one a directory scan happens to find first when several are
   bundled together. A manually-set `NVAFX_SM` in the environment always
   wins over the auto-detected value.
-- **Known issue, not a bug to "fix" reflexively**: `dereverb_denoiser`
-  fails to load with `NvAFX_CreateEffect` status 6
-  (`EFFECT_NOT_AVAILABLE`) on the reference dev machine's Blackwell GPU.
-  Suspected Blackwell-specific SDK gap, unconfirmed on other
-  architectures. Left in the candidate chain rather than removed: the
-  existing fallback in `maxine_ladspa.c` already degrades gracefully to
-  the working `denoiser` model when it fails, so keeping it costs a
-  modest amount of bundle size for zero functional risk, and removing
-  it would presumptively break the feature for any hardware where it
-  actually does work.
+- **Blackwell `dereverb_denoiser`**: `NvAFX_CreateEffect` returns status 6
+  (`EFFECT_NOT_AVAILABLE`) on the reference dev machine's SM 120 GPU. The
+  candidate is skipped automatically when the detected SM is 120 (from
+  `NVAFX_SM`, or the `.../sm_<N>/` model path) unless
+  `NVAFX_EFFECT=dereverb_denoiser` explicitly forces it. It stays in the
+  build and bundle for other architectures — don't remove it.
+- **Maxine effect cache**: `maxine_ladspa.c` keeps loaded `NvAFX_Handle`s
+  alive for the process lifetime and reuses them across graph activations,
+  because PipeWire's filter-graph destroys and re-instantiates LADSPA nodes
+  on every activate. Don't "fix" that by destroying effects in `cleanup()`
+  — it reintroduces the ~1.1 s/channel TensorRT reload of silence before
+  playback starts. The cache is torn down by an `atexit` handler that is
+  registered after the SDK's own; without that ordering libnvinfer
+  segfaults at process exit.
 
 ## General conventions
 
